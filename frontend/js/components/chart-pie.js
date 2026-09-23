@@ -29,18 +29,32 @@ function loadChartJs() {
   return _ready;
 }
 
-const PALETTE = [
-  "var(--chart-1)", "var(--chart-2)", "var(--chart-3)",
-  "var(--chart-4)", "var(--chart-5)", "var(--chart-6)",
+// CSS variables backing the design-token chart palette.
+// Chart.js draws onto <canvas>, which cannot resolve `var(--…)` references —
+// we must hand it concrete color strings via getComputedStyle(). See DESIGN-TOKENS §2.8.
+const PALETTE_VARS = [
+  "--chart-1", "--chart-2", "--chart-3",
+  "--chart-4", "--chart-5", "--chart-6",
 ];
 
+function resolveCssVar(name) {
+  // getPropertyValue returns the *used* value of a custom property, resolving
+  // chained `var()` references. Empty string only when the var is undefined.
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
 function resolveColor(v, i) {
-  if (!v) return PALETTE[i % PALETTE.length];
+  // No per-slice color: pick from the chart-palette CSS vars and resolve them
+  // to concrete colors so Chart.js canvas can render them.
+  if (!v) {
+    const resolved = resolveCssVar(PALETTE_VARS[i % PALETTE_VARS.length]);
+    return resolved || PALETTE_VARS[i % PALETTE_VARS.length];
+  }
   if (v.startsWith("var(")) {
-    // CSS variable — Chart.js won't resolve, so compute via getComputedStyle
     const m = v.match(/var\(([^)]+)\)/);
     if (m) {
-      return getComputedStyle(document.documentElement).getPropertyValue(m[1]).trim() || v;
+      const resolved = resolveCssVar(m[1]);
+      if (resolved) return resolved;
     }
   }
   return v;

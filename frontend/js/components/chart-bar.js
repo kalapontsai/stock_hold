@@ -25,11 +25,31 @@ function loadChartJs() {
   return _ready;
 }
 
+// Design-token chart palette (CSS variable names). Canvas ignores var() — we
+// must resolve via getComputedStyle before handing colors to Chart.js.
+const PALETTE_VARS = [
+  "--chart-1", "--chart-2", "--chart-3",
+  "--chart-4", "--chart-5", "--chart-6",
+];
+
+function resolveCssVar(name) {
+  // getPropertyValue returns the used value, resolving chained var() refs.
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+function pickPaletteColor(i) {
+  const name = PALETTE_VARS[i % PALETTE_VARS.length];
+  return resolveCssVar(name) || name; // last-ditch: at least return the var() string
+}
+
 function resolveColor(v) {
   if (!v) return null;
   if (v.startsWith("var(")) {
     const m = v.match(/var\(([^)]+)\)/);
-    if (m) return getComputedStyle(document.documentElement).getPropertyValue(m[1]).trim() || v;
+    if (m) {
+      const resolved = resolveCssVar(m[1]);
+      if (resolved) return resolved;
+    }
   }
   return v;
 }
@@ -83,7 +103,7 @@ export async function createBarChart({
       datasets: datasets.map((ds) => ({
         label: ds.label,
         data: ds.values,
-        backgroundColor: resolveColor(ds.color) || "var(--chart-1)",
+        backgroundColor: resolveColor(ds.color) || pickPaletteColor(0),
         stack: stacked ? (ds.stack || "default") : undefined,
       })),
     };
@@ -95,8 +115,7 @@ export async function createBarChart({
         label: title || "數值",
         data: data.map((d) => Number(d.y || 0)),
         backgroundColor: data.map((d, i) =>
-          resolveColor(d.color) ||
-          ["var(--chart-1)","var(--chart-2)","var(--chart-3)","var(--chart-4)","var(--chart-5)","var(--chart-6)"][i % 6]
+          resolveColor(d.color) || pickPaletteColor(i)
         ),
         stack: stacked ? (data[0]?.stack || "default") : undefined,
       }],
