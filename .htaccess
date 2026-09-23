@@ -1,0 +1,15 @@
+Options -Indexes
+
+# Never serve runtime data, secrets, database files, or source/config files.
+<FilesMatch "^(\.env|.*\.(env|sqlite|sqlite3|db|log|bak|py|sql|ini|toml))$">
+    Require all denied
+</FilesMatch>
+
+RewriteEngine On
+
+# Route API requests through the PHP front controller. Keep the original URI
+# so index.php can dispatch `/api/v1/...` without Apache ProxyPass.
+RewriteRule ^api/v1(?:/.*)?$ api/index.php [QSA,L]
+
+# Do not expose implementation directories through directory indexes.
+RewriteRule ^(?:runtime|migrations|cli|backend)(?:/|$) - [F,L]

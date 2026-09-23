@@ -1,0 +1,26 @@
+{
+  "description": "Stock Hold demo data. All names, account numbers and values are synthetic.",
+  "accounts": [
+    {
+      "type": "BANK",
+      "name": "示範銀行活存",
+      "currency": "TWD",
+      "broker": null,
+      "account_no": "DEMO-BANK-****"
+    },
+    {
+      "type": "BROKER",
+      "name": "示範券商台股帳戶",
+      "currency": "TWD",
+      "broker": "示範證券",
+      "account_no": "DEMO-BROKER-****"
+    }
+  ],
+  "securities": [
+    {"symbol": "2330", "name": "示範台積電", "type": "STOCK", "exchange": "TW", "currency": "TWD"},
+    {"symbol": "0050", "name": "示範台灣50", "type": "ETF", "exchange": "TW", "currency": "TWD"}
+  ],
+  "notes": [
+    "請使用 cli/seed.php 或 API 匯入，不要把實際帳戶資料放入此檔案。"
+  ]
+}

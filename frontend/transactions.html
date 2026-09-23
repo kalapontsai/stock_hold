@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>交易 Transactions · stock_hold</title>
+  <meta name="description" content="交易 CRUD、篩選、新增/編輯、批次刪除">
+  <meta name="color-scheme" content="light dark">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Noto+Sans+TC:wght@400;500;700&display=swap">
+  <link rel="stylesheet" href="./css/tokens.css">
+  <link rel="stylesheet" href="./css/base.css">
+  <link rel="stylesheet" href="./css/layout.css">
+  <link rel="stylesheet" href="./css/components.css">
+</head>
+<body data-page="transactions">
+  <div class="app">
+    <header class="app__header"></header>
+    <aside class="app__sidebar"></aside>
+    <main class="app__main" aria-busy="true">
+      <div class="empty-state">
+        <div class="empty-state__msg">載入中…</div>
+      </div>
+    </main>
+    <div class="app__tabbar"></div>
+  </div>
+  <noscript>
+    <div style="padding: var(--space-6); text-align: center;">
+      本頁需要 JavaScript 才能運作。
+    </div>
+  </noscript>
+  <script type="module" src="./js/main.js"></script>
+</body>
+</html>

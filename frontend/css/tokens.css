@@ -1,0 +1,182 @@
+/* ============================================================
+   stock_hold — Design Tokens (CSS Custom Properties)
+   Source: docs/DESIGN-TOKENS.md §11 (full block)
+   Loaded FIRST by every HTML page.
+   ============================================================ */
+
+:root {
+  /* ============ COLOR ============ */
+  --color-primary-50:  #EFF6FF;
+  --color-primary-100: #DBEAFE;
+  --color-primary-200: #BFDBFE;
+  --color-primary-300: #93C5FD;
+  --color-primary-400: #60A5FA;
+  --color-primary-500: #3B82F6;
+  --color-primary-600: #2563EB;
+  --color-primary-700: #1D4ED8;
+  --color-primary-800: #1E40AF;
+  --color-primary-900: #1E3A8A;
+
+  --color-success-50:  #ECFDF5;
+  --color-success-100: #D1FAE5;
+  --color-success-300: #6EE7B7;
+  --color-success-500: #10B981;
+  --color-success-700: #047857;
+  --color-success-900: #064E3B;
+
+  --color-danger-50:   #FEF2F2;
+  --color-danger-100:  #FEE2E2;
+  --color-danger-300:  #FCA5A5;
+  --color-danger-500:  #EF4444;
+  --color-danger-700:  #B91C1C;
+  --color-danger-900:  #7F1D1D;
+
+  --color-warning-50:  #FFFBEB;
+  --color-warning-100: #FEF3C7;
+  --color-warning-300: #FCD34D;
+  --color-warning-500: #F59E0B;
+  --color-warning-700: #B45309;
+  --color-warning-900: #78350F;
+
+  --color-neutral-0:   #FFFFFF;
+  --color-neutral-50:  #F8FAFC;
+  --color-neutral-100: #F1F5F9;
+  --color-neutral-200: #E2E8F0;
+  --color-neutral-300: #CBD5E1;
+  --color-neutral-400: #94A3B8;
+  --color-neutral-500: #64748B;
+  --color-neutral-600: #475569;
+  --color-neutral-700: #334155;
+  --color-neutral-800: #1E293B;
+  --color-neutral-900: #0F172A;
+  --color-neutral-950: #020617;
+
+  /* Semantic aliases */
+  --color-text:           var(--color-neutral-700);
+  --color-text-muted:     var(--color-neutral-500);
+  --color-text-inverse:   var(--color-neutral-0);
+  --color-heading:        var(--color-neutral-800);
+  --color-bg:             var(--color-neutral-0);
+  --color-bg-elevated:    var(--color-neutral-50);
+  --color-bg-subtle:      var(--color-neutral-100);
+  --color-border:         var(--color-neutral-200);
+  --color-border-strong:  var(--color-neutral-300);
+  --color-link:           var(--color-primary-700);
+  --color-positive:       var(--color-success-500);
+  --color-negative:       var(--color-danger-500);
+  --color-warning:        var(--color-warning-500);
+  --color-focus-ring:     var(--color-primary-500);
+
+  /* Chart palette */
+  --chart-1: var(--color-primary-500);
+  --chart-2: var(--color-success-500);
+  --chart-3: var(--color-warning-500);
+  --chart-4: var(--color-danger-500);
+  --chart-5: #8B5CF6;
+  --chart-6: #14B8A6;
+
+  /* ============ TYPOGRAPHY ============ */
+  --font-family-sans: "Inter", "Noto Sans TC", -apple-system, BlinkMacSystemFont,
+                      "Segoe UI", "Microsoft JhengHei", "PingFang TC",
+                      "Helvetica Neue", Arial, system-ui, sans-serif;
+  --font-family-mono: "JetBrains Mono", "SF Mono", "Menlo", "Consolas",
+                      "Source Han Mono TC", monospace;
+  --font-family-number: var(--font-family-mono);
+
+  --text-xs:      0.75rem;
+  --text-sm:      0.875rem;
+  --text-base:    1rem;
+  --text-lg:      1.125rem;
+  --text-xl:      1.25rem;
+  --text-2xl:     1.5rem;
+  --text-3xl:     1.875rem;
+  --text-4xl:     2.25rem;
+  --text-display: 3rem;
+
+  --font-weight-regular: 400;
+  --font-weight-medium:  500;
+  --font-weight-semibold: 600;
+  --font-weight-bold:    700;
+
+  /* ============ SPACING ============ */
+  --space-0:  0;
+  --space-1:  0.25rem;
+  --space-2:  0.5rem;
+  --space-3:  0.75rem;
+  --space-4:  1rem;
+  --space-6:  1.5rem;
+  --space-8:  2rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+  --space-24: 6rem;
+
+  /* ============ RADIUS ============ */
+  --radius-sm:   4px;
+  --radius-md:   8px;
+  --radius-lg:   12px;
+  --radius-xl:   16px;
+  --radius-2xl:  24px;
+  --radius-full: 9999px;
+
+  /* ============ SHADOW ============ */
+  --shadow-sm:    0 1px 2px 0 rgb(15 23 42 / 0.05);
+  --shadow-md:    0 4px 6px -1px rgb(15 23 42 / 0.10),
+                  0 2px 4px -2px rgb(15 23 42 / 0.06);
+  --shadow-lg:    0 10px 15px -3px rgb(15 23 42 / 0.12),
+                  0 4px 6px -4px rgb(15 23 42 / 0.08);
+  --shadow-xl:    0 20px 25px -5px rgb(15 23 42 / 0.16),
+                  0 8px 10px -6px rgb(15 23 42 / 0.08);
+  --shadow-focus: 0 0 0 3px rgb(59 130 246 / 0.35);
+
+  /* ============ MOTION ============ */
+  --duration-fast:   150ms;
+  --duration-normal: 250ms;
+  --duration-slow:   350ms;
+  --easing-standard:   cubic-bezier(0.4, 0, 0.2, 1);
+  --easing-emphasized: cubic-bezier(0.2, 0, 0, 1);
+  --easing-decel:      cubic-bezier(0, 0, 0.2, 1);
+  --easing-accel:      cubic-bezier(0.4, 0, 1, 1);
+
+  /* ============ Z-INDEX ============ */
+  --z-base:       0;
+  --z-sticky:    10;
+  --z-dropdown:  20;
+  --z-drawer:    30;
+  --z-modal-back: 40;
+  --z-modal:     50;
+  --z-toast:     60;
+  --z-tooltip:   70;
+}
+
+/* ============ DARK THEME ============ */
+[data-theme="dark"] {
+  --color-primary-500: #60A5FA;
+  --color-primary-600: #3B82F6;
+  --color-primary-700: #2563EB;
+
+  --color-text:           var(--color-neutral-200);
+  --color-text-muted:     var(--color-neutral-400);
+  --color-heading:        var(--color-neutral-50);
+  --color-bg:             var(--color-neutral-900);
+  --color-bg-elevated:    var(--color-neutral-800);
+  --color-bg-subtle:      var(--color-neutral-700);
+  --color-border:         var(--color-neutral-700);
+  --color-border-strong:  var(--color-neutral-600);
+  --color-link:           #93C5FD;
+  --color-positive:       #34D399;
+  --color-negative:       #F87171;
+  --color-warning:        #FBBF24;
+
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.4),
+               0 2px 4px -2px rgb(0 0 0 / 0.3);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.5),
+               0 4px 6px -4px rgb(0 0 0 / 0.3);
+}
+
+/* ============ A11Y: prefers-reduced-motion ============ */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
