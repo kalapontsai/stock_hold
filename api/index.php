@@ -42,8 +42,8 @@ if ($method === 'POST' && $path === '/auth/register') {
     if (!filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($email) > 254) {
         envelope_error('VALIDATION_ERROR', 'Email format is invalid.', 422);
     }
-    if (strlen($password) < 12 || !preg_match('/[A-Z]/', $password) || !preg_match('/[a-z]/', $password) || !preg_match('/[0-9]/', $password)) {
-        envelope_error('VALIDATION_ERROR', 'Password must be at least 12 characters and include upper, lower, and numeric characters.', 422);
+    if (strlen($password) < 4 || !preg_match('/[A-Z]/', $password) || !preg_match('/[a-z]/', $password) || !preg_match('/[0-9]/', $password)) {
+        envelope_error('VALIDATION_ERROR', 'Password must be at least 4 characters and include upper, lower, and numeric characters.', 422);
     }
     $now = now_sql();
     try {
