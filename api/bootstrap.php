@@ -52,27 +52,54 @@ function db(): PDO
     $pdo->exec('PRAGMA foreign_keys = ON');
     $pdo->exec('PRAGMA journal_mode = WAL');
     $pdo->exec('PRAGMA busy_timeout = 5000');
-    // Apache requests must work immediately after deployment.  The CLI
-    // migration remains the explicit operational command, while this
-    // idempotent bootstrap prevents a first request from failing on a fresh
-    // runtime directory.
-    $migration = file_get_contents(dirname(__DIR__) . '/migrations/001-initial.sql');
-    if ($migration === false) {
-        throw new RuntimeException('Initial migration file is not readable.');
-    }
-    $pdo->exec($migration);
-    $mark = $pdo->prepare('INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)');
-    $mark->execute(['001-initial', now_sql()]);
+    apply_migrations($pdo);
     return $pdo;
+}
+
+function apply_migrations(PDO $pdo): void
+{
+    $pdo->exec('CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)');
+    $files = glob(dirname(__DIR__) . '/migrations/[0-9][0-9][0-9]-*.sql') ?: [];
+    sort($files, SORT_STRING);
+    foreach ($files as $file) {
+        $version = pathinfo($file, PATHINFO_FILENAME);
+        $exists = $pdo->prepare('SELECT 1 FROM schema_migrations WHERE version = ?');
+        $exists->execute([$version]);
+        if ($exists->fetchColumn()) {
+            continue;
+        }
+        $migration = file_get_contents($file);
+        if ($migration === false) {
+            throw new RuntimeException("Migration file is not readable: {$file}");
+        }
+        $pdo->beginTransaction();
+        try {
+            $pdo->exec($migration);
+            $pdo->prepare('INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)')->execute([$version, now_sql()]);
+            $pdo->commit();
+        } catch (Throwable $e) {
+            $pdo->rollBack();
+            throw $e;
+        }
+    }
 }
 
 function json_response(array $body, int $status = 200): never
 {
+    security_headers();
     http_response_code($status);
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store');
     echo json_encode($body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;
+}
+
+function security_headers(): void
+{
+    header('X-Content-Type-Options: nosniff');
+    header('X-Frame-Options: DENY');
+    header('Referrer-Policy: strict-origin-when-cross-origin');
+    header("Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'");
 }
 
 function request_id(): string
@@ -127,13 +154,131 @@ function require_fields(array $data, array $fields): void
 
 function csrf_token(): string
 {
-    if (session_status() !== PHP_SESSION_ACTIVE) {
-        session_start(['cookie_httponly' => true, 'cookie_samesite' => 'Lax']);
-    }
+    start_session();
     if (empty($_SESSION['csrf_token'])) {
         $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
     }
     return $_SESSION['csrf_token'];
+}
+
+function start_session(): void
+{
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        return;
+    }
+    $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+        || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+    session_set_cookie_params([
+        'httponly' => true,
+        'secure' => $https,
+        'samesite' => 'Lax',
+        'path' => '/',
+    ]);
+    session_start();
+}
+
+function public_registration_enabled(PDO $pdo): bool
+{
+    $configured = env_value('STOCK_HOLD_ALLOW_REGISTRATION');
+    if ($configured !== null) {
+        return in_array(strtolower($configured), ['1', 'true', 'yes', 'on'], true);
+    }
+    return ((int)$pdo->query('SELECT COUNT(*) FROM users')->fetchColumn()) === 0;
+}
+
+function current_user(PDO $pdo): ?array
+{
+    start_session();
+    $userId = $_SESSION['user_id'] ?? null;
+    if (!$userId) {
+        $expected = env_value('STOCK_HOLD_API_TOKEN');
+        $provided = $_SERVER['HTTP_X_API_TOKEN'] ?? '';
+        if ($expected === null || $expected === '' || $provided === '' || !hash_equals($expected, $provided)) {
+            return null;
+        }
+        $userId = $pdo->query('SELECT id FROM users ORDER BY id LIMIT 1')->fetchColumn();
+    }
+    if (!$userId) {
+        return null;
+    }
+    $stmt = $pdo->prepare('SELECT id,username,email,failed_login_attempts,locked_until,created_at,updated_at FROM users WHERE id=?');
+    $stmt->execute([(int)$userId]);
+    $user = $stmt->fetch();
+    if (!$user) {
+        unset($_SESSION['user_id']);
+        return null;
+    }
+    return $user;
+}
+
+function require_authenticated_user(PDO $pdo): array
+{
+    $user = current_user($pdo);
+    if (!$user) {
+        envelope_error('UNAUTHORIZED', 'Authentication required.', 401);
+    }
+    return $user;
+}
+
+function require_write_access(PDO $pdo): array
+{
+    $user = require_authenticated_user($pdo);
+    $expected = env_value('STOCK_HOLD_API_TOKEN');
+    $provided = $_SERVER['HTTP_X_API_TOKEN'] ?? '';
+    if ($expected !== null && $expected !== '' && $provided !== '' && hash_equals($expected, $provided)) {
+        return $user;
+    }
+
+    $csrf = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+    if ($csrf !== '' && hash_equals(csrf_token(), $csrf)) {
+        return $user;
+    }
+    envelope_error('UNAUTHORIZED', 'Mutation requires API token or CSRF token.', 401);
+}
+
+function require_csrf_token(): void
+{
+    $provided = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+    if ($provided === '' || !hash_equals(csrf_token(), $provided)) {
+        envelope_error('UNAUTHORIZED', 'CSRF token is required.', 401);
+    }
+}
+
+function client_ip(): string
+{
+    return substr((string)($_SERVER['REMOTE_ADDR'] ?? '0.0.0.0'), 0, 64);
+}
+
+function rate_limit_key(string $scope, string $value): string
+{
+    return $scope . ':' . hash('sha256', strtolower(trim($value)));
+}
+
+function is_rate_limited(PDO $pdo, string $key): bool
+{
+    $stmt = $pdo->prepare('SELECT locked_until FROM auth_rate_limits WHERE scope_key=?');
+    $stmt->execute([$key]);
+    $locked = $stmt->fetchColumn();
+    return is_string($locked) && $locked !== '' && strtotime($locked) > time();
+}
+
+function record_failed_login(PDO $pdo, string $key): void
+{
+    $now = time();
+    $stmt = $pdo->prepare('SELECT failed_attempts,window_started_at FROM auth_rate_limits WHERE scope_key=?');
+    $stmt->execute([$key]);
+    $row = $stmt->fetch();
+    $window = $row && (strtotime($row['window_started_at']) ?: 0) > $now - 900
+        ? (int)$row['failed_attempts'] + 1 : 1;
+    $started = gmdate('Y-m-d H:i:s', $row && $window > 1 ? strtotime($row['window_started_at']) : $now);
+    $locked = $window >= 5 ? gmdate('Y-m-d H:i:s', $now + 900) : null;
+    $upsert = $pdo->prepare('INSERT INTO auth_rate_limits(scope_key,failed_attempts,window_started_at,locked_until) VALUES(?,?,?,?) ON CONFLICT(scope_key) DO UPDATE SET failed_attempts=excluded.failed_attempts,window_started_at=excluded.window_started_at,locked_until=excluded.locked_until');
+    $upsert->execute([$key, $window, $started, $locked]);
+}
+
+function clear_login_limits(PDO $pdo, string $key): void
+{
+    $pdo->prepare('DELETE FROM auth_rate_limits WHERE scope_key=?')->execute([$key]);
 }
 
 function require_write_access(): void

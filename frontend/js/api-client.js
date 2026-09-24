@@ -145,6 +145,10 @@ async function request(method, path, body, opts = {}) {
   if (!envelope || typeof envelope !== "object") {
     throw new ApiError("BAD_RESPONSE", `Non-JSON response from ${url}`, null, res.status);
   }
+  if (res.status === 401 && !path.startsWith("/auth/")) {
+    csrfToken = null;
+    window.dispatchEvent(new CustomEvent("stock-hold:unauthorized"));
+  }
   if (envelope.status === "ok") {
     return envelope.data;
   }
@@ -234,6 +238,15 @@ export const accounts = {
   create: (body) => request("POST", "/accounts/create", body),
   update: (id, body) => request("POST", "/accounts/update", { ...body, id }),
   remove: (id) => request("POST", "/accounts/disable", { id }),
+};
+
+/* Authentication */
+export const auth = {
+  login: (body) => request("POST", "/auth/login", body),
+  register: (body) => request("POST", "/auth/register", body),
+  logout: () => request("POST", "/auth/logout", {}),
+  me: () => request("GET", "/auth/me"),
+  session: () => request("GET", "/auth/session"),
 };
 
 /* Securities */

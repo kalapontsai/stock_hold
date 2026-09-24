@@ -17,6 +17,8 @@ Apache + PHP module
 
 API：`http://localhost/stock_hold/api/v1/`
 
+登入：首次使用請開啟 `/stock_hold/frontend/login.html` 註冊；後續請使用帳號或 Email 登入。業務 API 需要同源 Session，瀏覽器 mutation 需 CSRF token；Agent/CLI mutation 可使用 `X-API-Token`，且仍會套用使用者資料範圍。
+
 ## 必要環境
 
 - Apache 2.4
@@ -81,6 +83,8 @@ WSL/Linux：
 ```bash
 php cli/migrate.php
 ```
+
+Migration 會依檔名順序套用。`002-users-and-tenant-columns.sql` 會建立使用者與租戶欄位；既有單人資料會在第一個成功註冊的帳號建立時歸屬該帳號。公開註冊預設只允許建立第一個帳號，可用 `STOCK_HOLD_ALLOW_REGISTRATION=1` 開放後續註冊。
 
 ### 4. 載入示範資料（可選）
 

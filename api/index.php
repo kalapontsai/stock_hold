@@ -3,6 +3,8 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/bootstrap.php';
 
+security_headers();
+
 set_exception_handler(static function (Throwable $e): never {
     error_log(json_encode(['event' => 'stock_hold_api_error', 'type' => get_class($e), 'message' => $e->getMessage()]));
     envelope_error('INTERNAL_ERROR', 'Internal server error.', 500);
@@ -15,19 +17,115 @@ $path = $marker === false ? '/' : substr($uri, $marker + strlen('/api/v1'));
 $path = '/' . trim($path, '/');
 $path = $path === '//' ? '/' : $path;
 
+$pdo = db();
+
 if ($method === 'GET' && $path === '/health') {
     envelope_ok(['service' => 'stock_hold', 'version' => STOCK_HOLD_VERSION]);
 }
 if ($method === 'GET' && $path === '/auth/session') {
-    envelope_ok(['csrf_token' => csrf_token()]);
+    $user = current_user($pdo);
+    envelope_ok(['csrf_token' => csrf_token(), 'authenticated' => $user !== null, 'user' => $user]);
+}
+
+if ($method === 'POST' && $path === '/auth/register') {
+    require_csrf_token();
+    if (!public_registration_enabled($pdo)) {
+        envelope_error('REGISTRATION_DISABLED', 'Public registration is disabled.', 403);
+    }
+    require_fields($input = body_json(), ['username', 'email', 'password']);
+    $username = trim((string)$input['username']);
+    $email = strtolower(trim((string)$input['email']));
+    $password = (string)$input['password'];
+    if (!preg_match('/^[A-Za-z0-9_]{3,32}$/', $username)) {
+        envelope_error('VALIDATION_ERROR', 'Username must contain 3-32 letters, numbers, or underscores.', 422);
+    }
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($email) > 254) {
+        envelope_error('VALIDATION_ERROR', 'Email format is invalid.', 422);
+    }
+    if (strlen($password) < 12 || !preg_match('/[A-Z]/', $password) || !preg_match('/[a-z]/', $password) || !preg_match('/[0-9]/', $password)) {
+        envelope_error('VALIDATION_ERROR', 'Password must be at least 12 characters and include upper, lower, and numeric characters.', 422);
+    }
+    $now = now_sql();
+    try {
+        $pdo->beginTransaction();
+        $stmt = $pdo->prepare('INSERT INTO users(username,email,password_hash,created_at,updated_at) VALUES(?,?,?,?,?)');
+        $stmt->execute([$username, $email, password_hash($password, PASSWORD_DEFAULT), $now, $now]);
+        $userId = (int)$pdo->lastInsertId();
+        foreach (['accounts','securities','transactions','positions','prices','dividends','fx_rates','cash_balances'] as $table) {
+            $pdo->exec("UPDATE {$table} SET user_id = {$userId} WHERE user_id IS NULL");
+        }
+        $pdo->commit();
+    } catch (PDOException $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        if (str_contains($e->getMessage(), 'UNIQUE')) envelope_error('CONFLICT', 'Username or email already exists.', 409);
+        throw $e;
+    }
+    start_session();
+    session_regenerate_id(true);
+    $_SESSION['user_id'] = $userId;
+    $get = $pdo->prepare('SELECT id,username,email,created_at,updated_at FROM users WHERE id=?');
+    $get->execute([$userId]);
+    envelope_ok($get->fetch(), 201);
+}
+
+if ($method === 'POST' && $path === '/auth/login') {
+    require_csrf_token();
+    $input = body_json();
+    require_fields($input, ['username', 'password']);
+    $identity = trim((string)$input['username']);
+    $ipKey = rate_limit_key('ip', client_ip());
+    $identityKey = rate_limit_key('account', $identity);
+    if (is_rate_limited($pdo, $ipKey) || is_rate_limited($pdo, $identityKey)) {
+        envelope_error('RATE_LIMITED', 'Too many login attempts. Try again later.', 429);
+    }
+    $stmt = $pdo->prepare('SELECT * FROM users WHERE username=? OR email=? LIMIT 1');
+    $stmt->execute([$identity, strtolower($identity)]);
+    $user = $stmt->fetch();
+    $locked = $user && $user['locked_until'] && strtotime($user['locked_until']) > time();
+    if (!$user || $locked || !password_verify((string)$input['password'], (string)$user['password_hash'])) {
+        record_failed_login($pdo, $ipKey);
+        record_failed_login($pdo, $identityKey);
+        if ($user) {
+            $attempts = (int)$user['failed_login_attempts'] + 1;
+            $until = $attempts >= 5 ? gmdate('Y-m-d H:i:s', time() + 900) : null;
+            $update = $pdo->prepare('UPDATE users SET failed_login_attempts=?,locked_until=?,updated_at=? WHERE id=?');
+            $update->execute([$attempts, $until, now_sql(), $user['id']]);
+        }
+        envelope_error('INVALID_CREDENTIALS', 'Username or password is incorrect.', 401);
+    }
+    $pdo->prepare('UPDATE users SET failed_login_attempts=0,locked_until=NULL,updated_at=? WHERE id=?')->execute([now_sql(), $user['id']]);
+    clear_login_limits($pdo, $ipKey);
+    clear_login_limits($pdo, $identityKey);
+    start_session();
+    session_regenerate_id(true);
+    $_SESSION['user_id'] = (int)$user['id'];
+    envelope_ok(['id' => (int)$user['id'], 'username' => $user['username'], 'email' => $user['email']]);
+}
+
+if ($method === 'POST' && $path === '/auth/logout') {
+    require_csrf_token();
+    start_session();
+    $_SESSION = [];
+    if (ini_get('session.use_cookies')) {
+        $params = session_get_cookie_params();
+        setcookie(session_name(), '', time() - 42000, $params['path'], $params['domain'] ?? '', (bool)$params['secure'], (bool)$params['httponly']);
+    }
+    session_destroy();
+    envelope_ok(['logged_out' => true]);
+}
+
+if ($method === 'GET' && $path === '/auth/me') {
+    envelope_ok(require_authenticated_user($pdo));
 }
 
 if ($method !== 'GET') {
-    require_write_access();
+    $currentUser = require_write_access($pdo);
+} else {
+    $currentUser = require_authenticated_user($pdo);
 }
+$userId = (int)$currentUser['id'];
 
-$input = $method === 'GET' ? [] : body_json();
-$pdo = db();
+$input = $method === 'GET' ? [] : ($input ?? body_json());
 
 function row_account(array $row): array
 {
@@ -40,10 +138,10 @@ function row_security(array $row): array
     return $row;
 }
 
-function rebuild_position(PDO $pdo, string $accountId, string $securityId): void
+function rebuild_position(PDO $pdo, int $userId, string $accountId, string $securityId): void
 {
-    $stmt = $pdo->prepare('SELECT type, qty, price, fees FROM transactions WHERE account_id = ? AND security_id = ? ORDER BY txn_date, created_at, id');
-    $stmt->execute([$accountId, $securityId]);
+    $stmt = $pdo->prepare('SELECT type, qty, price, fees FROM transactions WHERE user_id = ? AND account_id = ? AND security_id = ? ORDER BY txn_date, created_at, id');
+    $stmt->execute([$userId, $accountId, $securityId]);
     $qty = 0.0;
     $avg = 0.0;
     $realized = 0.0;
@@ -68,17 +166,24 @@ function rebuild_position(PDO $pdo, string $accountId, string $securityId): void
         }
     }
     $qty = max(0.0, $qty);
-    $upsert = $pdo->prepare('INSERT INTO positions (account_id, security_id, qty, avg_cost, realized_pl, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(account_id, security_id) DO UPDATE SET qty=excluded.qty, avg_cost=excluded.avg_cost, realized_pl=excluded.realized_pl, updated_at=excluded.updated_at');
-    $upsert->execute([$accountId, $securityId, $qty, $avg, $realized, now_sql()]);
+    $upsert = $pdo->prepare('INSERT INTO positions (account_id, security_id, user_id, qty, avg_cost, realized_pl, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(account_id, security_id) DO UPDATE SET user_id=excluded.user_id, qty=excluded.qty, avg_cost=excluded.avg_cost, realized_pl=excluded.realized_pl, updated_at=excluded.updated_at');
+    $upsert->execute([$accountId, $securityId, $userId, $qty, $avg, $realized, now_sql()]);
 }
 
-function transaction_payload(PDO $pdo, array $input, ?string $id = null): array
+function transaction_payload(PDO $pdo, int $userId, array $input, ?string $id = null): array
 {
     require_fields($input, ['account_id', 'txn_date', 'type', 'currency']);
-    $account = $pdo->prepare('SELECT id FROM accounts WHERE id = ?');
-    $account->execute([$input['account_id']]);
+    $account = $pdo->prepare('SELECT id FROM accounts WHERE id = ? AND user_id = ?');
+    $account->execute([$input['account_id'], $userId]);
     if (!$account->fetch()) {
         envelope_error('NOT_FOUND', 'Account does not exist.', 404);
+    }
+    if (!empty($input['security_id'])) {
+        $security = $pdo->prepare('SELECT id FROM securities WHERE id=? AND user_id=?');
+        $security->execute([$input['security_id'], $userId]);
+        if (!$security->fetch()) {
+            envelope_error('NOT_FOUND', 'Security does not exist.', 404);
+        }
     }
     $type = strtoupper((string)$input['type']);
     $allowed = ['BUY','SELL','DIVIDEND','DEPOSIT','WITHDRAW','TRANSFER_IN','TRANSFER_OUT','FEE','SPLIT','MERGER','RIGHTS'];
@@ -112,6 +217,7 @@ function transaction_payload(PDO $pdo, array $input, ?string $id = null): array
         'fx_rate' => decimal($input['fx_rate'] ?? '1', '1'),
         'amount' => (string)$amount,
         'note' => $input['note'] ?? null,
+        'user_id' => $userId,
         'updated_at' => now_sql(),
     ];
 }
@@ -132,7 +238,7 @@ function save_app_setting(PDO $pdo, string $key, string $value): void
 
 function persist_prices(PDO $pdo, array $items): array
 {
-    $upsert = $pdo->prepare('INSERT INTO prices (id,security_id,date,open,high,low,close,volume,currency,created_at) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(security_id,date) DO UPDATE SET open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,volume=excluded.volume,currency=excluded.currency,created_at=excluded.created_at');
+    $upsert = $pdo->prepare('INSERT INTO prices (id,security_id,date,open,high,low,close,volume,currency,created_at,user_id) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(security_id,date) DO UPDATE SET user_id=excluded.user_id,open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,volume=excluded.volume,currency=excluded.currency,created_at=excluded.created_at');
     $updated = 0; $failed = [];
     foreach ($items as $item) {
         if (!is_array($item) || empty($item['security_id']) || empty($item['date']) || !isset($item['close'])) {
@@ -143,7 +249,7 @@ function persist_prices(PDO $pdo, array $items): array
         $open = decimal($item['open'] ?? $close);
         $high = decimal($item['high'] ?? $close);
         $low = decimal($item['low'] ?? $close);
-        $upsert->execute([uuid(), $item['security_id'], $item['date'], $open, $high, $low, $close, decimal($item['volume'] ?? '0'), strtoupper((string)($item['currency'] ?? 'TWD')), now_sql()]);
+        $upsert->execute([uuid(), $item['security_id'], $item['date'], $open, $high, $low, $close, decimal($item['volume'] ?? '0'), strtoupper((string)($item['currency'] ?? 'TWD')), now_sql(), (int)($item['user_id'] ?? 0)]);
         $updated++;
     }
     return ['updated' => $updated, 'failed' => $failed];
@@ -198,72 +304,74 @@ function fetch_twse_mis_quotes(PDO $pdo, array $securities): array
             'high' => is_numeric($quote['h'] ?? null) ? $quote['h'] : $close,
             'low' => is_numeric($quote['l'] ?? null) ? $quote['l'] : $close,
             'close' => $close, 'volume' => is_numeric($quote['v'] ?? null) ? $quote['v'] : '0',
-            'currency' => $security['currency'],
+            'currency' => $security['currency'], 'user_id' => (int)$security['user_id'],
         ];
     }
     return array_merge(persist_prices($pdo, $items), ['failed' => array_merge($failed, [])]);
 }
 
 if ($method === 'GET' && $path === '/accounts') {
-    $stmt = $pdo->query('SELECT id,type,name,currency,broker,account_no,status,created_at,updated_at FROM accounts ORDER BY type,name');
+    $stmt = $pdo->prepare('SELECT id,type,name,currency,broker,account_no,status,created_at,updated_at FROM accounts WHERE user_id=? ORDER BY type,name');
+    $stmt->execute([$userId]);
     envelope_ok(list_data($stmt->fetchAll()));
 }
 if ($method === 'POST' && $path === '/accounts/create') {
     require_fields($input, ['type', 'name', 'currency']);
-    $row = [uuid(), strtoupper((string)$input['type']), trim((string)$input['name']), strtoupper((string)$input['currency']), $input['broker'] ?? null, $input['account_no'] ?? null, 'ACTIVE', now_sql(), now_sql()];
-    $stmt = $pdo->prepare('INSERT INTO accounts (id,type,name,currency,broker,account_no,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)');
+    $row = [uuid(), strtoupper((string)$input['type']), trim((string)$input['name']), strtoupper((string)$input['currency']), $input['broker'] ?? null, $input['account_no'] ?? null, 'ACTIVE', now_sql(), now_sql(), $userId];
+    $stmt = $pdo->prepare('INSERT INTO accounts (id,type,name,currency,broker,account_no,status,created_at,updated_at,user_id) VALUES (?,?,?,?,?,?,?,?,?,?)');
     $stmt->execute($row);
-    $get = $pdo->prepare('SELECT id,type,name,currency,broker,account_no,status,created_at,updated_at FROM accounts WHERE id=?');
-    $get->execute([$row[0]]);
+    $get = $pdo->prepare('SELECT id,type,name,currency,broker,account_no,status,created_at,updated_at FROM accounts WHERE id=? AND user_id=?');
+    $get->execute([$row[0], $userId]);
     envelope_ok($get->fetch(), 201);
 }
 if ($method === 'POST' && $path === '/accounts/update') {
     require_fields($input, ['id', 'name', 'currency']);
-    $stmt = $pdo->prepare('UPDATE accounts SET type=?,name=?,currency=?,broker=?,account_no=?,updated_at=? WHERE id=?');
-    $stmt->execute([strtoupper((string)($input['type'] ?? 'BANK')), trim((string)$input['name']), strtoupper((string)$input['currency']), $input['broker'] ?? null, $input['account_no'] ?? null, now_sql(), $input['id']]);
+    $stmt = $pdo->prepare('UPDATE accounts SET type=?,name=?,currency=?,broker=?,account_no=?,updated_at=? WHERE id=? AND user_id=?');
+    $stmt->execute([strtoupper((string)($input['type'] ?? 'BANK')), trim((string)$input['name']), strtoupper((string)$input['currency']), $input['broker'] ?? null, $input['account_no'] ?? null, now_sql(), $input['id'], $userId]);
     if ($stmt->rowCount() === 0) envelope_error('NOT_FOUND', 'Account does not exist.', 404);
-    $get = $pdo->prepare('SELECT id,type,name,currency,broker,account_no,status,created_at,updated_at FROM accounts WHERE id=?');
-    $get->execute([$input['id']]);
+    $get = $pdo->prepare('SELECT id,type,name,currency,broker,account_no,status,created_at,updated_at FROM accounts WHERE id=? AND user_id=?');
+    $get->execute([$input['id'], $userId]);
     envelope_ok($get->fetch());
 }
 if ($method === 'POST' && $path === '/accounts/disable') {
     require_fields($input, ['id']);
-    $stmt = $pdo->prepare("UPDATE accounts SET status='INACTIVE',updated_at=? WHERE id=?");
-    $stmt->execute([now_sql(), $input['id']]);
+    $stmt = $pdo->prepare("UPDATE accounts SET status='INACTIVE',updated_at=? WHERE id=? AND user_id=?");
+    $stmt->execute([now_sql(), $input['id'], $userId]);
     envelope_ok(['id' => $input['id'], 'deleted' => $stmt->rowCount() > 0, 'status' => 'INACTIVE']);
 }
 
 if ($method === 'GET' && $path === '/securities') {
-    $stmt = $pdo->query('SELECT id,symbol,exchange,currency,name,type,sector,is_active,created_at,updated_at FROM securities WHERE is_active=1 ORDER BY symbol');
+    $stmt = $pdo->prepare('SELECT id,symbol,exchange,currency,name,type,sector,is_active,created_at,updated_at FROM securities WHERE is_active=1 AND user_id=? ORDER BY symbol');
+    $stmt->execute([$userId]);
     envelope_ok(list_data(array_map('row_security', $stmt->fetchAll())));
 }
 if ($method === 'POST' && $path === '/securities/create') {
     require_fields($input, ['symbol', 'name', 'type']);
-    $row = [uuid(), strtoupper(trim((string)$input['symbol'])), strtoupper((string)($input['exchange'] ?? 'TW')), strtoupper((string)($input['currency'] ?? 'TWD')), trim((string)$input['name']), strtoupper((string)$input['type']), $input['sector'] ?? null, 1, now_sql(), now_sql()];
+    $row = [uuid(), strtoupper(trim((string)$input['symbol'])), strtoupper((string)($input['exchange'] ?? 'TW')), strtoupper((string)($input['currency'] ?? 'TWD')), trim((string)$input['name']), strtoupper((string)$input['type']), $input['sector'] ?? null, 1, now_sql(), now_sql(), $userId];
     try {
-        $stmt = $pdo->prepare('INSERT INTO securities (id,symbol,exchange,currency,name,type,sector,is_active,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)');
+        $stmt = $pdo->prepare('INSERT INTO securities (id,symbol,exchange,currency,name,type,sector,is_active,created_at,updated_at,user_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)');
         $stmt->execute($row);
     } catch (PDOException $e) {
         if (str_contains($e->getMessage(), 'UNIQUE')) envelope_error('CONFLICT', 'Symbol already exists.', 409);
         throw $e;
     }
-    $get = $pdo->prepare('SELECT * FROM securities WHERE id=?');
-    $get->execute([$row[0]]);
+    $get = $pdo->prepare('SELECT * FROM securities WHERE id=? AND user_id=?');
+    $get->execute([$row[0], $userId]);
     envelope_ok(row_security($get->fetch()), 201);
 }
 if ($method === 'POST' && $path === '/securities/update') {
     require_fields($input, ['id', 'name', 'type']);
-    $stmt = $pdo->prepare('UPDATE securities SET exchange=?,currency=?,name=?,type=?,sector=?,updated_at=? WHERE id=?');
-    $stmt->execute([strtoupper((string)($input['exchange'] ?? 'TW')), strtoupper((string)($input['currency'] ?? 'TWD')), trim((string)$input['name']), strtoupper((string)$input['type']), $input['sector'] ?? null, now_sql(), $input['id']]);
+    $stmt = $pdo->prepare('UPDATE securities SET exchange=?,currency=?,name=?,type=?,sector=?,updated_at=? WHERE id=? AND user_id=?');
+    $stmt->execute([strtoupper((string)($input['exchange'] ?? 'TW')), strtoupper((string)($input['currency'] ?? 'TWD')), trim((string)$input['name']), strtoupper((string)$input['type']), $input['sector'] ?? null, now_sql(), $input['id'], $userId]);
     if ($stmt->rowCount() === 0) envelope_error('NOT_FOUND', 'Security does not exist.', 404);
-    $get = $pdo->prepare('SELECT * FROM securities WHERE id=?');
-    $get->execute([$input['id']]);
+    $get = $pdo->prepare('SELECT * FROM securities WHERE id=? AND user_id=?');
+    $get->execute([$input['id'], $userId]);
     envelope_ok(row_security($get->fetch()));
 }
 if ($method === 'POST' && $path === '/securities/disable') {
     require_fields($input, ['id']);
-    $stmt = $pdo->prepare('UPDATE securities SET is_active=0,updated_at=? WHERE id=?');
-    $stmt->execute([now_sql(), $input['id']]);
+    $stmt = $pdo->prepare('UPDATE securities SET is_active=0,updated_at=? WHERE id=? AND user_id=?');
+    $stmt->execute([now_sql(), $input['id'], $userId]);
     envelope_ok(['id' => $input['id'], 'deleted' => $stmt->rowCount() > 0, 'is_active' => false]);
 }
 
@@ -278,52 +386,54 @@ if ($method === 'GET' && $path === '/transactions') {
     }
     if (!empty($_GET['from'])) { $where[] = 't.txn_date >= ?'; $args[] = $_GET['from']; }
     if (!empty($_GET['to'])) { $where[] = 't.txn_date <= ?'; $args[] = $_GET['to']; }
-    $sql = 'SELECT t.*,a.name AS account_name,s.symbol,s.name AS security_name FROM transactions t JOIN accounts a ON a.id=t.account_id LEFT JOIN securities s ON s.id=t.security_id';
+    $where[] = 't.user_id = ?';
+    $args[] = $userId;
+    $sql = 'SELECT t.*,a.name AS account_name,s.symbol,s.name AS security_name FROM transactions t JOIN accounts a ON a.id=t.account_id AND a.user_id=t.user_id LEFT JOIN securities s ON s.id=t.security_id AND s.user_id=t.user_id';
     if ($where) $sql .= ' WHERE ' . implode(' AND ', $where);
     $sql .= ' ORDER BY t.txn_date DESC,t.created_at DESC';
     $stmt = $pdo->prepare($sql); $stmt->execute($args);
     envelope_ok(list_data($stmt->fetchAll()));
 }
 if ($method === 'POST' && $path === '/transactions/create') {
-    $row = transaction_payload($pdo, $input);
+    $row = transaction_payload($pdo, $userId, $input);
     $pdo->beginTransaction();
-    $stmt = $pdo->prepare('INSERT INTO transactions (id,account_id,security_id,txn_date,type,qty,price,fees,currency,fx_rate,amount,note,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
-    $stmt->execute([$row['id'],$row['account_id'],$row['security_id'],$row['txn_date'],$row['type'],$row['qty'],$row['price'],$row['fees'],$row['currency'],$row['fx_rate'],$row['amount'],$row['note'],now_sql(),$row['updated_at']]);
-    if ($row['security_id']) rebuild_position($pdo, $row['account_id'], $row['security_id']);
+    $stmt = $pdo->prepare('INSERT INTO transactions (id,account_id,security_id,txn_date,type,qty,price,fees,currency,fx_rate,amount,note,created_at,updated_at,user_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+    $stmt->execute([$row['id'],$row['account_id'],$row['security_id'],$row['txn_date'],$row['type'],$row['qty'],$row['price'],$row['fees'],$row['currency'],$row['fx_rate'],$row['amount'],$row['note'],now_sql(),$row['updated_at'],$userId]);
+    if ($row['security_id']) rebuild_position($pdo, $userId, $row['account_id'], $row['security_id']);
     $pdo->commit();
     envelope_ok($row, 201);
 }
 if ($method === 'POST' && $path === '/transactions/update') {
     require_fields($input, ['id']);
-    $old = $pdo->prepare('SELECT account_id,security_id FROM transactions WHERE id=?'); $old->execute([$input['id']]); $previous = $old->fetch();
+    $old = $pdo->prepare('SELECT account_id,security_id FROM transactions WHERE id=? AND user_id=?'); $old->execute([$input['id'], $userId]); $previous = $old->fetch();
     if (!$previous) envelope_error('NOT_FOUND', 'Transaction does not exist.', 404);
-    $row = transaction_payload($pdo, $input, (string)$input['id']);
-    $stmt = $pdo->prepare('UPDATE transactions SET account_id=?,security_id=?,txn_date=?,type=?,qty=?,price=?,fees=?,currency=?,fx_rate=?,amount=?,note=?,updated_at=? WHERE id=?');
-    $stmt->execute([$row['account_id'],$row['security_id'],$row['txn_date'],$row['type'],$row['qty'],$row['price'],$row['fees'],$row['currency'],$row['fx_rate'],$row['amount'],$row['note'],$row['updated_at'],$row['id']]);
-    if ($previous['security_id']) rebuild_position($pdo, $previous['account_id'], $previous['security_id']);
-    if ($row['security_id']) rebuild_position($pdo, $row['account_id'], $row['security_id']);
+    $row = transaction_payload($pdo, $userId, $input, (string)$input['id']);
+    $stmt = $pdo->prepare('UPDATE transactions SET account_id=?,security_id=?,txn_date=?,type=?,qty=?,price=?,fees=?,currency=?,fx_rate=?,amount=?,note=?,updated_at=? WHERE id=? AND user_id=?');
+    $stmt->execute([$row['account_id'],$row['security_id'],$row['txn_date'],$row['type'],$row['qty'],$row['price'],$row['fees'],$row['currency'],$row['fx_rate'],$row['amount'],$row['note'],$row['updated_at'],$row['id'],$userId]);
+    if ($previous['security_id']) rebuild_position($pdo, $userId, $previous['account_id'], $previous['security_id']);
+    if ($row['security_id']) rebuild_position($pdo, $userId, $row['account_id'], $row['security_id']);
     envelope_ok($row);
 }
 if ($method === 'POST' && $path === '/transactions/reverse') {
     require_fields($input, ['id']);
-    $stmt = $pdo->prepare('SELECT * FROM transactions WHERE id=?'); $stmt->execute([$input['id']]); $old = $stmt->fetch();
+    $stmt = $pdo->prepare('SELECT * FROM transactions WHERE id=? AND user_id=?'); $stmt->execute([$input['id'], $userId]); $old = $stmt->fetch();
     if (!$old) envelope_error('NOT_FOUND', 'Transaction does not exist.', 404);
     $pdo->beginTransaction();
-    $insert = $pdo->prepare('INSERT INTO transactions (id,account_id,security_id,txn_date,type,qty,price,fees,currency,fx_rate,amount,note,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+    $insert = $pdo->prepare('INSERT INTO transactions (id,account_id,security_id,txn_date,type,qty,price,fees,currency,fx_rate,amount,note,created_at,updated_at,user_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
     $reverseType = $old['type'] === 'BUY' ? 'SELL' : ($old['type'] === 'SELL' ? 'BUY' : 'FEE');
-    $insert->execute([uuid(),$old['account_id'],$old['security_id'],gmdate('Y-m-d'),$reverseType,$old['qty'],$old['price'],$old['fees'],$old['currency'],$old['fx_rate'],-$old['amount'],'Reversal of '.$old['id'],now_sql(),now_sql()]);
-    if ($old['security_id']) rebuild_position($pdo, $old['account_id'], $old['security_id']);
+    $insert->execute([uuid(),$old['account_id'],$old['security_id'],gmdate('Y-m-d'),$reverseType,$old['qty'],$old['price'],$old['fees'],$old['currency'],$old['fx_rate'],-$old['amount'],'Reversal of '.$old['id'],now_sql(),now_sql(),$userId]);
+    if ($old['security_id']) rebuild_position($pdo, $userId, $old['account_id'], $old['security_id']);
     $pdo->commit();
     envelope_ok(['id' => $old['id'], 'reversed' => true]);
 }
 if ($method === 'POST' && $path === '/transactions/delete') {
     require_fields($input, ['id']);
-    $stmt = $pdo->prepare('SELECT * FROM transactions WHERE id=?'); $stmt->execute([$input['id']]); $old = $stmt->fetch();
+    $stmt = $pdo->prepare('SELECT * FROM transactions WHERE id=? AND user_id=?'); $stmt->execute([$input['id'], $userId]); $old = $stmt->fetch();
     if (!$old) envelope_error('NOT_FOUND', 'Transaction does not exist.', 404);
     $pdo->beginTransaction();
-    $del = $pdo->prepare('DELETE FROM transactions WHERE id=?');
-    $del->execute([$input['id']]);
-    if ($old['security_id']) rebuild_position($pdo, $old['account_id'], $old['security_id']);
+    $del = $pdo->prepare('DELETE FROM transactions WHERE id=? AND user_id=?');
+    $del->execute([$input['id'], $userId]);
+    if ($old['security_id']) rebuild_position($pdo, $userId, $old['account_id'], $old['security_id']);
     $pdo->commit();
     envelope_ok(['id' => $old['id'], 'deleted' => true]);
 }
@@ -334,21 +444,21 @@ if ($method === 'POST' && $path === '/transactions/batch-delete') {
     }
     $ids = array_values(array_unique(array_map('strval', $ids)));
     $placeholders = implode(',', array_fill(0, count($ids), '?'));
-    $stmt = $pdo->prepare("SELECT id, account_id, security_id FROM transactions WHERE id IN ($placeholders)");
-    $stmt->execute($ids);
+    $stmt = $pdo->prepare("SELECT id, account_id, security_id FROM transactions WHERE user_id=? AND id IN ($placeholders)");
+    $stmt->execute(array_merge([$userId], $ids));
     $rows = $stmt->fetchAll();
     if (count($rows) !== count($ids)) {
         envelope_error('NOT_FOUND', 'One or more transactions do not exist.', 404);
     }
     $pdo->beginTransaction();
-    $del = $pdo->prepare("DELETE FROM transactions WHERE id IN ($placeholders)");
-    $del->execute($ids);
+    $del = $pdo->prepare("DELETE FROM transactions WHERE user_id=? AND id IN ($placeholders)");
+    $del->execute(array_merge([$userId], $ids));
     $rebuilt = [];
     foreach ($rows as $row) {
         if (!$row['security_id']) continue;
         $key = $row['account_id'] . "\0" . $row['security_id'];
         if (isset($rebuilt[$key])) continue;
-        rebuild_position($pdo, $row['account_id'], $row['security_id']);
+        rebuild_position($pdo, $userId, $row['account_id'], $row['security_id']);
         $rebuilt[$key] = true;
     }
     $pdo->commit();
@@ -356,23 +466,25 @@ if ($method === 'POST' && $path === '/transactions/batch-delete') {
 }
 
 if ($method === 'GET' && $path === '/holdings') {
-    $sql = 'SELECT p.*,s.symbol,s.name,s.currency,a.name AS account_name,COALESCE((SELECT close FROM prices pr WHERE pr.security_id=p.security_id ORDER BY pr.date DESC LIMIT 1),0) AS current_price FROM positions p JOIN securities s ON s.id=p.security_id JOIN accounts a ON a.id=p.account_id WHERE p.qty > 0 ORDER BY s.symbol,a.name';
-    envelope_ok(list_data($pdo->query($sql)->fetchAll()));
+    $sql = 'SELECT p.*,s.symbol,s.name,s.currency,a.name AS account_name,COALESCE((SELECT close FROM prices pr WHERE pr.security_id=p.security_id AND pr.user_id=p.user_id ORDER BY pr.date DESC LIMIT 1),0) AS current_price FROM positions p JOIN securities s ON s.id=p.security_id AND s.user_id=p.user_id JOIN accounts a ON a.id=p.account_id AND a.user_id=p.user_id WHERE p.qty > 0 AND p.user_id=? ORDER BY s.symbol,a.name';
+    $stmt = $pdo->prepare($sql); $stmt->execute([$userId]);
+    envelope_ok(list_data($stmt->fetchAll()));
 }
 if ($method === 'GET' && $path === '/dividends') {
-    $sql = 'SELECT d.id,d.ex_date,d.pay_date,d.amount_per_share AS per_share,d.currency,s.symbol,s.name FROM dividends d JOIN securities s ON s.id=d.security_id ORDER BY d.pay_date DESC';
-    $rows = $pdo->query($sql)->fetchAll();
+    $sql = 'SELECT d.id,d.ex_date,d.pay_date,d.amount_per_share AS per_share,d.currency,s.symbol,s.name FROM dividends d JOIN securities s ON s.id=d.security_id AND s.user_id=d.user_id WHERE d.user_id=? ORDER BY d.pay_date DESC';
+    $stmt = $pdo->prepare($sql); $stmt->execute([$userId]); $rows = $stmt->fetchAll();
     foreach ($rows as &$row) { $row['qty'] = '0'; $row['amount_twd'] = '0'; }
     unset($row);
     envelope_ok(list_data($rows));
 }
 if ($method === 'GET' && $path === '/dashboard/summary') {
-    $accounts = (int)$pdo->query('SELECT COUNT(*) FROM accounts WHERE status="ACTIVE"')->fetchColumn();
-    $transactions = (int)$pdo->query('SELECT COUNT(*) FROM transactions')->fetchColumn();
-    $market = (float)$pdo->query('SELECT COALESCE(SUM(p.qty * COALESCE((SELECT close FROM prices pr WHERE pr.security_id=p.security_id ORDER BY pr.date DESC LIMIT 1),0)),0) FROM positions p')->fetchColumn();
-    $cash = (float)$pdo->query('SELECT COALESCE(SUM(amount),0) FROM transactions WHERE security_id IS NULL')->fetchColumn();
-    $positive = (int)$pdo->query('SELECT COUNT(*) FROM positions p WHERE p.qty > 0 AND p.avg_cost <= COALESCE((SELECT close FROM prices pr WHERE pr.security_id=p.security_id ORDER BY pr.date DESC LIMIT 1), p.avg_cost)')->fetchColumn();
-    $holdings = (int)$pdo->query('SELECT COUNT(*) FROM positions WHERE qty > 0')->fetchColumn();
+    $count = static function (PDO $pdo, string $sql, int $userId): int { $stmt = $pdo->prepare($sql); $stmt->execute([$userId]); return (int)$stmt->fetchColumn(); };
+    $accounts = $count($pdo, 'SELECT COUNT(*) FROM accounts WHERE status="ACTIVE" AND user_id=?', $userId);
+    $transactions = $count($pdo, 'SELECT COUNT(*) FROM transactions WHERE user_id=?', $userId);
+    $stmt = $pdo->prepare('SELECT COALESCE(SUM(p.qty * COALESCE((SELECT close FROM prices pr WHERE pr.security_id=p.security_id AND pr.user_id=p.user_id ORDER BY pr.date DESC LIMIT 1),0)),0) FROM positions p WHERE p.user_id=?'); $stmt->execute([$userId]); $market = (float)$stmt->fetchColumn();
+    $stmt = $pdo->prepare('SELECT COALESCE(SUM(amount),0) FROM transactions WHERE security_id IS NULL AND user_id=?'); $stmt->execute([$userId]); $cash = (float)$stmt->fetchColumn();
+    $positive = $count($pdo, 'SELECT COUNT(*) FROM positions p WHERE p.qty > 0 AND p.user_id=? AND p.avg_cost <= COALESCE((SELECT close FROM prices pr WHERE pr.security_id=p.security_id AND pr.user_id=p.user_id ORDER BY pr.date DESC LIMIT 1), p.avg_cost)', $userId);
+    $holdings = $count($pdo, 'SELECT COUNT(*) FROM positions WHERE qty > 0 AND user_id=?', $userId);
     $total = $market + $cash;
     envelope_ok([
         'total_assets' => (string)$total,
@@ -389,14 +501,14 @@ if ($method === 'GET' && $path === '/dashboard/summary') {
     ]);
 }
 if ($method === 'GET' && $path === '/dashboard/allocation') {
-    $rows = $pdo->query('SELECT s.exchange AS label, SUM(p.qty * COALESCE((SELECT close FROM prices pr WHERE pr.security_id=p.security_id ORDER BY pr.date DESC LIMIT 1),0)) AS value FROM positions p JOIN securities s ON s.id=p.security_id WHERE p.qty > 0 GROUP BY s.exchange ORDER BY value DESC')->fetchAll();
-    $cash = (float)$pdo->query('SELECT COALESCE(SUM(amount),0) FROM transactions WHERE security_id IS NULL')->fetchColumn();
+    $stmt = $pdo->prepare('SELECT s.exchange AS label, SUM(p.qty * COALESCE((SELECT close FROM prices pr WHERE pr.security_id=p.security_id AND pr.user_id=p.user_id ORDER BY pr.date DESC LIMIT 1),0)) AS value FROM positions p JOIN securities s ON s.id=p.security_id AND s.user_id=p.user_id WHERE p.qty > 0 AND p.user_id=? GROUP BY s.exchange ORDER BY value DESC'); $stmt->execute([$userId]); $rows = $stmt->fetchAll();
+    $stmt = $pdo->prepare('SELECT COALESCE(SUM(amount),0) FROM transactions WHERE security_id IS NULL AND user_id=?'); $stmt->execute([$userId]); $cash = (float)$stmt->fetchColumn();
     $allocation = array_map(static fn(array $row): array => ['label' => $row['label'], 'value' => (float)$row['value'], 'color' => null], $rows);
     if ($cash > 0) $allocation[] = ['label' => '現金', 'value' => $cash, 'color' => null];
     envelope_ok($allocation);
 }
 if ($method === 'GET' && $path === '/dashboard/recent') {
-    $rows = $pdo->query('SELECT t.*,s.symbol FROM transactions t LEFT JOIN securities s ON s.id=t.security_id ORDER BY t.txn_date DESC,t.created_at DESC LIMIT 5')->fetchAll();
+    $stmt = $pdo->prepare('SELECT t.*,s.symbol FROM transactions t LEFT JOIN securities s ON s.id=t.security_id AND s.user_id=t.user_id WHERE t.user_id=? ORDER BY t.txn_date DESC,t.created_at DESC LIMIT 5'); $stmt->execute([$userId]); $rows = $stmt->fetchAll();
     foreach ($rows as &$row) $row['amount'] = ((float)$row['amount'] >= 0 ? '+' : '') . (string)$row['amount'];
     unset($row);
     envelope_ok($rows);
@@ -409,7 +521,7 @@ if ($method === 'GET' && $path === '/dashboard/monthly-pnl') {
 }
 if ($method === 'GET' && preg_match('#^/reports/(realized|unrealized|dividends|tax-estimate)$#', $path, $match)) {
     if ($match[1] === 'dividends') {
-        $rows = $pdo->query('SELECT d.id,d.ex_date,d.pay_date,d.amount_per_share AS per_share,d.currency,s.symbol,s.name FROM dividends d JOIN securities s ON s.id=d.security_id ORDER BY d.pay_date DESC')->fetchAll();
+        $stmt = $pdo->prepare('SELECT d.id,d.ex_date,d.pay_date,d.amount_per_share AS per_share,d.currency,s.symbol,s.name FROM dividends d JOIN securities s ON s.id=d.security_id AND s.user_id=d.user_id WHERE d.user_id=? ORDER BY d.pay_date DESC'); $stmt->execute([$userId]); $rows = $stmt->fetchAll();
         foreach ($rows as &$row) { $row['qty'] = '0'; $row['amount_twd'] = '0'; }
         unset($row);
         envelope_ok($rows);
@@ -422,7 +534,7 @@ if ($method === 'GET' && preg_match('#^/reports/(realized|unrealized|dividends|t
     }
 }
 if ($method === 'GET' && $path === '/settings/quotes') {
-    $last = $pdo->query('SELECT MAX(created_at) FROM prices')->fetchColumn();
+    $stmt = $pdo->prepare('SELECT MAX(created_at) FROM prices WHERE user_id=?'); $stmt->execute([$userId]); $last = $stmt->fetchColumn();
     envelope_ok([
         'provider' => app_setting($pdo, 'quotes.provider', 'twse_mis'),
         'enabled' => app_setting($pdo, 'quotes.enabled', '1') === '1',
@@ -442,7 +554,7 @@ if ($method === 'POST' && $path === '/settings/quotes') {
 }
 if ($method === 'GET' && $path === '/skills') envelope_ok([]);
 if ($method === 'POST' && preg_match('#^/skills/[^/]+/(run|toggle)$#', $path)) envelope_error('NOT_IMPLEMENTED', 'Skill execution is not enabled in Apache-only runtime.', 501);
-if ($method === 'GET' && ($path === '/prices/last-update' || $path === '/maintenance/last-price-update')) envelope_ok(['as_of' => $pdo->query('SELECT MAX(created_at) FROM prices')->fetchColumn() ?: null]);
+if ($method === 'GET' && ($path === '/prices/last-update' || $path === '/maintenance/last-price-update')) { $stmt = $pdo->prepare('SELECT MAX(created_at) FROM prices WHERE user_id=?'); $stmt->execute([$userId]); envelope_ok(['as_of' => $stmt->fetchColumn() ?: null]); }
 if ($method === 'POST' && $path === '/maintenance/backup') {
     $backupDir = runtime_dir() . DIRECTORY_SEPARATOR . 'backup';
     if (!is_dir($backupDir)) mkdir($backupDir, 0770, true);
@@ -470,8 +582,8 @@ if ($method === 'POST' && $path === '/prices/batch-update') {
     if (!$hasManualItems || count($items) === 0) {
         if (app_setting($pdo, 'quotes.provider', 'twse_mis') === 'manual') envelope_error('QUOTE_PROVIDER_MANUAL', 'Quote provider is set to manual.', 422);
         $symbols = $input['symbols'] ?? [];
-        $sql = 'SELECT id,symbol,exchange,currency FROM securities WHERE is_active=1';
-        $params = [];
+        $sql = 'SELECT id,symbol,exchange,currency,user_id FROM securities WHERE is_active=1 AND user_id=?';
+        $params = [$userId];
         if (is_array($symbols) && count($symbols) > 0) {
             $placeholders = implode(',', array_fill(0, count($symbols), '?'));
             $sql .= " AND symbol IN ({$placeholders})";
@@ -480,6 +592,17 @@ if ($method === 'POST' && $path === '/prices/batch-update') {
         $stmt = $pdo->prepare($sql); $stmt->execute($params);
         envelope_ok(fetch_twse_mis_quotes($pdo, $stmt->fetchAll()));
     }
+    foreach ($items as $item) {
+        if (!is_array($item) || empty($item['security_id'])) {
+            continue;
+        }
+        $security = $pdo->prepare('SELECT id FROM securities WHERE id=? AND user_id=?');
+        $security->execute([$item['security_id'], $userId]);
+        if (!$security->fetch()) {
+            envelope_error('NOT_FOUND', 'Security does not exist.', 404);
+        }
+    }
+    foreach ($items as &$item) { if (is_array($item)) $item['user_id'] = $userId; } unset($item);
     envelope_ok(persist_prices($pdo, $items));
 }
 if ($method === 'POST' && $path === '/fx/refresh') envelope_ok(['updated_pairs' => [], 'added' => 0]);

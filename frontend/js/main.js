@@ -18,6 +18,7 @@ import { mountTransactions } from "./pages/transactions.js";
 import { mountHoldings } from "./pages/holdings.js";
 import { mountReports } from "./pages/reports.js";
 import { mountSettings } from "./pages/settings.js";
+import { auth, isMock } from "./api-client.js";
 
 const MOUNT_FNS = {
   dashboard:    mountDashboard,
@@ -75,9 +76,8 @@ function buildShell() {
         <button type="button" class="btn btn--secondary btn--sm" data-action="refresh">
           <span aria-hidden="true">↻</span> ${t("action.refresh")}
         </button>
-        <button type="button" class="btn btn--ghost btn--icon-only btn--sm" data-action="user" aria-label="使用者">
-          <span aria-hidden="true">👤</span>
-        </button>
+        <span class="header__user" data-user-name hidden></span>
+        <button type="button" class="btn btn--ghost btn--sm" data-action="logout" hidden>登出</button>
       </div>
     </div>
   `;
@@ -97,6 +97,10 @@ function buildShell() {
     if (pageRefresh) pageRefresh.click();
     else import("./components/modal.js").then(({ toast }) =>
       toast(t("action.refreshDone"), { tone: "success" }));
+  });
+
+  header.querySelector("[data-action=logout]").addEventListener("click", async () => {
+    try { await auth.logout(); } finally { window.location.href = "./login.html"; }
   });
 
   // --- Sidebar nav (desktop)
@@ -157,7 +161,21 @@ function tabLink(key, icon, label, href, currentPage) {
 async function boot() {
   applyTheme();
   buildShell();
-
+  window.addEventListener("stock-hold:unauthorized", () => {
+    if (!window.location.pathname.endsWith("/login.html")) window.location.href = "./login.html";
+  }, { once: true });
+  if (!isMock()) {
+    try {
+      const user = await auth.me();
+      const name = document.querySelector("[data-user-name]");
+      const logout = document.querySelector("[data-action=logout]");
+      if (name && logout) {
+        name.textContent = user.username;
+        name.hidden = false;
+        logout.hidden = false;
+      }
+    } catch (_) { return; }
+  }
   const pageKey = getPageKey();
   const mountFn = MOUNT_FNS[pageKey];
   const main = document.querySelector(".app__main");

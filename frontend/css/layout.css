@@ -397,6 +397,16 @@
   border-bottom-color: var(--color-primary-500);
   font-weight: var(--font-weight-semibold);
 }
+
+.auth-page { min-height: 100vh; display: grid; place-items: center; padding: var(--space-6); background: var(--color-bg); }
+.auth-card { width: min(100%, 28rem); padding: var(--space-8); background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg); }
+.auth-card h1 { margin: 0; }
+.auth-card__hint { color: var(--color-text-muted); margin-top: var(--space-2); }
+.auth-card .tabs { display: flex; gap: var(--space-2); margin: var(--space-6) 0; }
+.auth-card form { display: grid; gap: var(--space-4); }
+.auth-card .form-field { display: grid; gap: var(--space-2); }
+.auth-card input { width: 100%; }
+.form-error { color: var(--color-danger); }
 [data-theme="dark"] .tabs__tab[aria-selected="true"] {
   color: var(--color-primary-300);
 }
