@@ -614,10 +614,79 @@ if ($method === 'GET' && $path === '/dashboard/recent') {
     envelope_ok($rows);
 }
 if ($method === 'GET' && $path === '/dashboard/monthly-pnl') {
-    $labels = [];
-    $cursor = new DateTimeImmutable('first day of -11 months');
-    for ($i = 0; $i < 12; $i++) { $labels[] = $cursor->format('n') . '月'; $cursor = $cursor->modify('+1 month'); }
-    envelope_ok(['labels' => $labels, 'realized' => array_fill(0, 12, '0'), 'unrealized' => array_fill(0, 12, '0')]);
+    // 12 month-ends (oldest first) anchored to UTC month boundaries.
+    $tz = new DateTimeZone('UTC');
+    $months = [];
+    $base = new DateTimeImmutable('first day of this month 00:00:00', $tz);
+    $start = $base->modify('-11 months');
+    for ($i = 0; $i < 12; $i++) {
+        $m = $start->modify("+{$i} months");
+        $end = $m->modify('last day of this month');
+        $months[] = [
+            'label' => $m->format('n') . '月',
+            'end_iso' => $end->format('Y-m-d'),
+            'end_sql' => $end->format('Ymd'),
+        ];
+    }
+
+    // Distinct (account_id, security_id) pairs the user has traded.
+    $pairStmt = $pdo->prepare('SELECT DISTINCT account_id, security_id FROM transactions WHERE user_id=? AND security_id IS NOT NULL');
+    $pairStmt->execute([$userId]);
+    $pairs = $pairStmt->fetchAll();
+
+    $priceStmt = $pdo->prepare('SELECT close FROM prices WHERE user_id=? AND security_id=? AND date <= ? ORDER BY date DESC LIMIT 1');
+    $txStmt   = $pdo->prepare('SELECT type, qty, price, fees FROM transactions WHERE user_id=? AND account_id=? AND security_id=? AND txn_date <= ? ORDER BY txn_date, created_at, id');
+
+    $realizedSeries = array_fill(0, 12, 0.0);
+    $unrealizedSeries = array_fill(0, 12, 0.0);
+    $prevRealizedTotal = 0.0;
+
+    foreach ($months as $idx => $m) {
+        $realizedAtM = 0.0;
+        $unrealizedAtM = 0.0;
+        foreach ($pairs as $p) {
+            $accountId = (string)$p['account_id'];
+            $securityId = (string)$p['security_id'];
+            $txStmt->execute([$userId, $accountId, $securityId, $m['end_iso']]);
+            $qty = 0.0;
+            $avg = 0.0;
+            foreach ($txStmt->fetchAll() as $tx) {
+                $type = strtoupper((string)$tx['type']);
+                $q = (float)$tx['qty']; $price = (float)$tx['price']; $fees = (float)$tx['fees'];
+                if ($type === 'BUY') {
+                    $totalCost = $q * $price + $fees;
+                    $denom = $qty + $q;
+                    $avg = $denom > 0 ? ($qty * $avg + $totalCost) / $denom : 0.0;
+                    $qty += $q;
+                } elseif ($type === 'SELL') {
+                    $realizedAtM += ($q * $price - $fees) - ($q * $avg);
+                    $qty -= $q;
+                    if ($qty <= 0) {
+                        $qty = 0.0;
+                        $avg = 0.0;
+                    }
+                }
+            }
+            if ($qty > 0) {
+                $priceStmt->execute([$userId, $securityId, $m['end_sql']]);
+                $close = (float)($priceStmt->fetchColumn() ?: 0);
+                if ($close > 0) {
+                    $unrealizedAtM += $qty * ($close - $avg);
+                }
+            }
+        }
+        // Per-month realized = realized events during this month.
+        $realizedSeries[$idx] = round($realizedAtM - $prevRealizedTotal, 2);
+        // Unrealized = mark-to-market snapshot at month-end.
+        $unrealizedSeries[$idx] = round($unrealizedAtM, 2);
+        $prevRealizedTotal = $realizedAtM;
+    }
+
+    envelope_ok([
+        'labels' => array_column($months, 'label'),
+        'realized' => array_map(static fn (float $v): string => (string)$v, $realizedSeries),
+        'unrealized' => array_map(static fn (float $v): string => (string)$v, $unrealizedSeries),
+    ]);
 }
 if ($method === 'GET' && preg_match('#^/reports/(realized|unrealized|dividends|tax-estimate)$#', $path, $match)) {
     if ($match[1] === 'dividends') {
