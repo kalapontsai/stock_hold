@@ -12,4 +12,4 @@ RewriteEngine On
 RewriteRule ^api/v1(?:/.*)?$ api/index.php [QSA,L]
 
 # Do not expose implementation directories through directory indexes.
-RewriteRule ^(?:runtime|migrations|cli|backend)(?:/|$) - [F,L]
+RewriteRule ^(?:runtime|migrations|cli|backend|scripts)(?:/|$) - [F,L]
