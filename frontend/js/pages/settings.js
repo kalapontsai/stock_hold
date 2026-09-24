@@ -46,12 +46,13 @@ export async function mountSettings(root) {
   layout.appendChild(sections);
 
   // Load
-  const [user, accounts, securities, skills, quoteSettings] = await Promise.all([
+  const [user, accounts, securities, skills, quoteSettings, health] = await Promise.all([
     api.auth.me(),
     api.accounts.list().catch(() => []),
     api.securities.list().catch(() => []),
     api.skills.list().catch(() => []),
     api.quoteSettings.get().catch(() => ({ provider: "twse_mis", enabled: true, interval_minutes: 15, last_updated: null })),
+    api.rawRequest("GET", "/health").catch(() => ({})),
   ]);
 
   // ───────── 0. 使用者 ─────────
@@ -271,7 +272,11 @@ export async function mountSettings(root) {
   // F-02 fix: backup/restore moved off the HTTP surface. Buttons removed;
   // operators now run cli/backup.php / cli/restore.php on the server.
   const maintenanceSection = section(t("set.sec.maintenance"), "maintenance");
+  const currentVersion = (health && typeof health.version === "string") ? health.version : "—";
   maintenanceSection.querySelector("[data-host]").innerHTML = `
+    <div class="form-field__hint" style="margin-bottom: var(--space-3); font-size: var(--text-base);">
+      目前版本：<strong data-current-version>${escapeHtml(currentVersion)}</strong>
+    </div>
     <div style="display:flex; flex-wrap: wrap; gap: var(--space-3);">
       <button type="button" class="btn btn--secondary" data-action="health">${t("action.healthCheck")}</button>
       <button type="button" class="btn btn--secondary" data-action="update">${t("action.checkUpdate")}</button>
