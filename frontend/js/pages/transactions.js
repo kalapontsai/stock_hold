@@ -12,7 +12,7 @@ import { createDataTable } from "../components/data-table.js";
 import { createModal, confirmDialog, toast } from "../components/modal.js";
 import { createCurrencyInput } from "../components/currency-input.js";
 
-const TYPE_KEYS = ["BUY","SELL","DIVIDEND","DEPOSIT","WITHDRAW","TRANSFER_IN","TRANSFER_OUT","FEE","SPLIT","MERGER"];
+const TYPE_KEYS = ["BUY","SELL","DIVIDEND","DEPOSIT","WITHDRAW","TRANSFER_IN","TRANSFER_OUT","FEE","SPLIT","MERGER","RIGHTS"];
 
 export async function mountTransactions(root) {
   root.innerHTML = "";
@@ -241,7 +241,7 @@ export async function mountTransactions(root) {
     if (!ids.length) return;
     const ok = await confirmDialog({
       title: t("txn.deleteConfirm.title"),
-      body: t("txn.deleteConfirm.body"),
+      body: t("txn.deleteConfirm.batchBody", { n: ids.length }),
       confirmLabel: t("action.delete"),
       confirmTone: "danger",
     });
@@ -269,7 +269,7 @@ export async function mountTransactions(root) {
 
     // Bank ↔ Stock toggle：依類別顯示對應的 type 集合，並決定 qty/price/symbol/amount 欄位是否啟用。
     const BANK_TYPES = ["DEPOSIT","WITHDRAW","TRANSFER_IN","TRANSFER_OUT","FEE"];
-    const STOCK_TYPES = ["BUY","SELL","DIVIDEND","SPLIT","MERGER"];
+    const STOCK_TYPES = ["BUY","SELL","DIVIDEND","SPLIT","MERGER","RIGHTS"];
     const typesForCategory = (cat) => (cat === "bank" ? BANK_TYPES : STOCK_TYPES);
     const isBankType = (k) => BANK_TYPES.includes(k);
     const initialAccount =
@@ -510,10 +510,16 @@ export async function mountTransactions(root) {
       saveBtn.disabled = true;
       try {
         const fd = new FormData(form);
+        const accountId = fd.get("account_id");
+        const securityId = fd.get("security_id");
+        const account = accounts.find(a => a.id === accountId);
+        const security = securityId ? securities.find(s => s.id === securityId) : null;
+        const currency = (security && security.currency) || (account && account.currency) || "TWD";
         const body = {
           type: fd.get("type"),
-          account_id: fd.get("account_id"),
-          security_id: fd.get("security_id") || null,
+          account_id: accountId,
+          currency: currency,
+          security_id: securityId || null,
           txn_date: fd.get("txn_date"),
           qty: qtyInput.getRawValue(),
           price: priceInput.getRawValue(),
@@ -539,7 +545,8 @@ export async function mountTransactions(root) {
 
   // --- Range presets
   function applyRangePreset(p) {
-    const today = new Date("2026-09-23T00:00:00Z");
+    const today = new Date();
+    today.setUTCHours(0,0,0,0);
     const fmt = (d) => d.toISOString().slice(0, 10);
     if (p === "custom") {
       filterBar.querySelector("[data-custom-range]").hidden = false;
@@ -594,6 +601,7 @@ function typeBadgeClass(type) {
   if (type === "BUY" || type === "DEPOSIT" || type === "TRANSFER_IN") return "badge--positive";
   if (type === "SELL" || type === "WITHDRAW" || type === "TRANSFER_OUT" || type === "FEE") return "badge--negative";
   if (type === "DIVIDEND") return "badge--info";
+  if (type === "RIGHTS") return "badge--info";
   return "badge--neutral";
 }
 function computeAmount(row) {
@@ -604,6 +612,9 @@ function computeAmount(row) {
     return "-" + formatMoney(row.fees || row.price || "0", "TWD", { decimals: 0 }).replace(/^NT\$ /, "");
   }
   if (row.type === "BUY") {
+    return "-" + formatMoney(String(Number(row.qty) * Number(row.price)), "TWD", { decimals: 0 }).replace(/^NT\$ /, "");
+  }
+  if (row.type === "RIGHTS") {
     return "-" + formatMoney(String(Number(row.qty) * Number(row.price)), "TWD", { decimals: 0 }).replace(/^NT\$ /, "");
   }
   if (row.type === "SELL") {

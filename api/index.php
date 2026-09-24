@@ -56,6 +56,12 @@ function rebuild_position(PDO $pdo, string $accountId, string $securityId): void
                 $avg = (($qty * $avg) + ($tQty * $price)) / $newQty;
             }
             $qty = $newQty;
+        } elseif ($txn['type'] === 'RIGHTS') {
+            $newQty = $qty + $tQty;
+            if ($newQty > 0) {
+                $avg = (($qty * $avg) + ($tQty * $price)) / $newQty;
+            }
+            $qty = $newQty;
         } elseif ($txn['type'] === 'SELL') {
             $realized += ($price - $avg) * $tQty - (float)($txn['fees'] ?? 0);
             $qty -= $tQty;
@@ -75,7 +81,7 @@ function transaction_payload(PDO $pdo, array $input, ?string $id = null): array
         envelope_error('NOT_FOUND', 'Account does not exist.', 404);
     }
     $type = strtoupper((string)$input['type']);
-    $allowed = ['BUY','SELL','DIVIDEND','DEPOSIT','WITHDRAW','TRANSFER_IN','TRANSFER_OUT','FEE','SPLIT','MERGER'];
+    $allowed = ['BUY','SELL','DIVIDEND','DEPOSIT','WITHDRAW','TRANSFER_IN','TRANSFER_OUT','FEE','SPLIT','MERGER','RIGHTS'];
     if (!in_array($type, $allowed, true)) {
         envelope_error('VALIDATION_ERROR', 'Transaction type is invalid.', 422);
     }
@@ -84,11 +90,11 @@ function transaction_payload(PDO $pdo, array $input, ?string $id = null): array
     $fees = (float)decimal($input['fees'] ?? '0');
     $gross = ((float)($qty ?? 0)) * ((float)($price ?? 0));
     $net = $gross + $fees;
-    $negative = in_array($type, ['BUY','WITHDRAW','FEE','TRANSFER_OUT'], true);
+    $negative = in_array($type, ['BUY','WITHDRAW','FEE','TRANSFER_OUT','RIGHTS'], true);
     $amount = array_key_exists('amount', $input) && $input['amount'] !== null && $input['amount'] !== ''
         ? (float)decimal($input['amount'])
         : ($negative ? -1 : 1) * $net;
-    if (in_array($type, ['BUY','WITHDRAW','FEE','TRANSFER_OUT'], true)) {
+    if (in_array($type, ['BUY','WITHDRAW','FEE','TRANSFER_OUT','RIGHTS'], true)) {
         $amount = -abs($amount);
     } elseif (in_array($type, ['SELL','DEPOSIT','DIVIDEND','TRANSFER_IN'], true)) {
         $amount = abs($amount);
@@ -298,7 +304,7 @@ if ($method === 'POST' && $path === '/transactions/update') {
     if ($row['security_id']) rebuild_position($pdo, $row['account_id'], $row['security_id']);
     envelope_ok($row);
 }
-if ($method === 'POST' && ($path === '/transactions/reverse' || $path === '/transactions/delete')) {
+if ($method === 'POST' && $path === '/transactions/reverse') {
     require_fields($input, ['id']);
     $stmt = $pdo->prepare('SELECT * FROM transactions WHERE id=?'); $stmt->execute([$input['id']]); $old = $stmt->fetch();
     if (!$old) envelope_error('NOT_FOUND', 'Transaction does not exist.', 404);
@@ -309,6 +315,44 @@ if ($method === 'POST' && ($path === '/transactions/reverse' || $path === '/tran
     if ($old['security_id']) rebuild_position($pdo, $old['account_id'], $old['security_id']);
     $pdo->commit();
     envelope_ok(['id' => $old['id'], 'reversed' => true]);
+}
+if ($method === 'POST' && $path === '/transactions/delete') {
+    require_fields($input, ['id']);
+    $stmt = $pdo->prepare('SELECT * FROM transactions WHERE id=?'); $stmt->execute([$input['id']]); $old = $stmt->fetch();
+    if (!$old) envelope_error('NOT_FOUND', 'Transaction does not exist.', 404);
+    $pdo->beginTransaction();
+    $del = $pdo->prepare('DELETE FROM transactions WHERE id=?');
+    $del->execute([$input['id']]);
+    if ($old['security_id']) rebuild_position($pdo, $old['account_id'], $old['security_id']);
+    $pdo->commit();
+    envelope_ok(['id' => $old['id'], 'deleted' => true]);
+}
+if ($method === 'POST' && $path === '/transactions/batch-delete') {
+    $ids = $input['ids'] ?? null;
+    if (!is_array($ids) || count($ids) === 0) {
+        envelope_error('VALIDATION_ERROR', 'ids must be a non-empty array.', 422);
+    }
+    $ids = array_values(array_unique(array_map('strval', $ids)));
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+    $stmt = $pdo->prepare("SELECT id, account_id, security_id FROM transactions WHERE id IN ($placeholders)");
+    $stmt->execute($ids);
+    $rows = $stmt->fetchAll();
+    if (count($rows) !== count($ids)) {
+        envelope_error('NOT_FOUND', 'One or more transactions do not exist.', 404);
+    }
+    $pdo->beginTransaction();
+    $del = $pdo->prepare("DELETE FROM transactions WHERE id IN ($placeholders)");
+    $del->execute($ids);
+    $rebuilt = [];
+    foreach ($rows as $row) {
+        if (!$row['security_id']) continue;
+        $key = $row['account_id'] . "\0" . $row['security_id'];
+        if (isset($rebuilt[$key])) continue;
+        rebuild_position($pdo, $row['account_id'], $row['security_id']);
+        $rebuilt[$key] = true;
+    }
+    $pdo->commit();
+    envelope_ok(['ids' => $ids, 'deleted' => count($ids)]);
 }
 
 if ($method === 'GET' && $path === '/holdings') {

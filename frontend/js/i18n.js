@@ -101,6 +101,7 @@ const STRINGS = {
     "txn.batchDelete":            "批次刪除",
     "txn.deleteConfirm.title":    "刪除交易",
     "txn.deleteConfirm.body":     "確定要刪除這筆交易嗎？此操作無法復原。",
+    "txn.deleteConfirm.batchBody": "確定要刪除已選的 {n} 筆交易嗎？此操作無法復原。",
     "txn.field.type":             "類型",
     "txn.field.account":          "帳戶",
     "txn.field.symbol":           "標的",
@@ -131,6 +132,7 @@ const STRINGS = {
     "txnType.FEE":                "手續費",
     "txnType.SPLIT":              "分割",
     "txnType.MERGER":             "合併",
+    "txnType.RIGHTS":             "配股",
 
     /* Localized English for the new strings (kept short, not full translation). */
     "txn.category.label":         "Category",

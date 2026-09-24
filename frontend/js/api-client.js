@@ -75,6 +75,10 @@ const MOCK_TABLE = {
   "POST /securities/disable": mockSecurities.deleteSecurity,
   "GET /transactions":       mockTxns.listTransactions,
   "GET /transactions/{id}":  mockTxns.getTransaction,
+  "POST /transactions/create":       mockTxns.createTransaction,
+  "POST /transactions/update":       mockTxns.updateTransaction,
+  "POST /transactions/delete":       mockTxns.deleteTransaction,
+  "POST /transactions/batch-delete": mockTxns.batchDeleteTransactions,
   "GET /holdings":           mockHoldings.listHoldings,
   "GET /dashboard/summary":  mockDashboard.summary,
   "GET /dashboard/allocation": mockDashboard.allocation,
@@ -248,7 +252,7 @@ export const transactions = {
   create: (body) => request("POST", "/transactions/create", body),
   update: (id, body) => request("POST", "/transactions/update", { ...body, id }),
   remove: (id) => request("POST", "/transactions/delete", { id }),
-  batchRemove: (ids) => Promise.all(ids.map((id) => request("POST", "/transactions/delete", { id }))),
+  batchRemove: (ids) => request("POST", "/transactions/batch-delete", { ids }),
 };
 
 /* Holdings */

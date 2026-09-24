@@ -49,15 +49,24 @@ export function createDataTable({
   const sortState = new Map();
   if (initialSort) sortState.set(initialSort.key, initialSort.direction || "ascending");
 
+  let selectAllCb = null;
   if (selectable) {
     const th = document.createElement("th");
     th.scope = "col";
     th.style.width = "32px";
-    const sel = document.createElement("input");
-    sel.type = "checkbox";
-    sel.className = "checkbox";
-    sel.setAttribute("aria-label", "全選");
-    th.appendChild(sel);
+    selectAllCb = document.createElement("input");
+    selectAllCb.type = "checkbox";
+    selectAllCb.className = "checkbox";
+    selectAllCb.setAttribute("aria-label", "全選");
+    selectAllCb.addEventListener("change", () => {
+      if (selectAllCb.checked) {
+        currentData.forEach((row) => selectedKeys.add(rowKey(row)));
+      } else {
+        selectedKeys.clear();
+      }
+      render();
+    });
+    th.appendChild(selectAllCb);
     headRow.appendChild(th);
   }
 
@@ -149,6 +158,10 @@ export function createDataTable({
     }
 
     if (!currentData.length) {
+      if (selectable && selectAllCb) {
+        selectAllCb.checked = false;
+        selectAllCb.indeterminate = false;
+      }
       const tr = document.createElement("tr");
       const td = document.createElement("td");
       td.colSpan = columns.length + (selectable ? 1 : 0) + (onRowClick ? 1 : 0);
@@ -184,6 +197,13 @@ export function createDataTable({
       });
     }
 
+    if (selectable && selectAllCb) {
+      const allKeys = rows.map((row) => rowKey(row));
+      const selectedCount = allKeys.filter((k) => selectedKeys.has(k)).length;
+      selectAllCb.checked = allKeys.length > 0 && selectedCount === allKeys.length;
+      selectAllCb.indeterminate = selectedCount > 0 && selectedCount < allKeys.length;
+    }
+
     rows.forEach((row) => {
       const tr = document.createElement("tr");
       const key = rowKey(row);
@@ -209,6 +229,12 @@ export function createDataTable({
           if (cb.checked) selectedKeys.add(key);
           else selectedKeys.delete(key);
           tr.classList.toggle("is-selected", cb.checked);
+          if (selectAllCb) {
+            const allKeys = rows.map((r) => rowKey(r));
+            const selectedCount = allKeys.filter((k) => selectedKeys.has(k)).length;
+            selectAllCb.checked = allKeys.length > 0 && selectedCount === allKeys.length;
+            selectAllCb.indeterminate = selectedCount > 0 && selectedCount < allKeys.length;
+          }
         });
         td.appendChild(cb);
         tr.appendChild(td);
@@ -238,6 +264,10 @@ export function createDataTable({
         menu.className = "btn btn--ghost btn--icon-only btn--sm";
         menu.setAttribute("aria-label", "列操作");
         menu.innerHTML = "&#x22EE;";
+        menu.addEventListener("click", (e) => {
+          e.stopPropagation();
+          onRowClick(row);
+        });
         td.appendChild(menu);
         tr.appendChild(td);
       }

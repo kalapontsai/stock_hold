@@ -68,3 +68,71 @@ export async function listTransactions({ query } = {}) {
 export async function getTransaction() {
   return TXNS[0];
 }
+
+function genId() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  return "tx-" + Math.random().toString(36).slice(2, 10);
+}
+
+export async function createTransaction({ body } = {}) {
+  const row = {
+    id: genId(),
+    account_id: body?.account_id,
+    security_id: body?.security_id ?? null,
+    txn_date: body?.txn_date,
+    type: body?.type,
+    qty: body?.qty ?? null,
+    price: body?.price ?? null,
+    fees: body?.fees ?? "0",
+    fx_rate: body?.fx_rate ?? "1.0000",
+    amount: body?.amount ?? null,
+    note: body?.note ?? "",
+  };
+  TXNS.unshift(row);
+  return row;
+}
+
+export async function updateTransaction({ body } = {}) {
+  const idx = TXNS.findIndex((r) => r.id === body?.id);
+  if (idx < 0) {
+    const err = new Error("Transaction does not exist.");
+    err.code = "NOT_FOUND";
+    throw err;
+  }
+  TXNS[idx] = { ...TXNS[idx], ...body };
+  return TXNS[idx];
+}
+
+export async function deleteTransaction({ body } = {}) {
+  const idx = TXNS.findIndex((r) => r.id === body?.id);
+  if (idx < 0) {
+    const err = new Error("Transaction does not exist.");
+    err.code = "NOT_FOUND";
+    throw err;
+  }
+  const [removed] = TXNS.splice(idx, 1);
+  return { id: removed.id, deleted: true };
+}
+
+export async function batchDeleteTransactions({ body } = {}) {
+  const ids = Array.isArray(body?.ids) ? body.ids.map(String) : [];
+  if (!ids.length) {
+    const err = new Error("ids must be a non-empty array.");
+    err.code = "VALIDATION_ERROR";
+    throw err;
+  }
+  const remaining = [];
+  const deleted = [];
+  for (const row of TXNS) {
+    if (ids.includes(row.id)) deleted.push(row.id);
+    else remaining.push(row);
+  }
+  if (deleted.length !== ids.length) {
+    const err = new Error("One or more transactions do not exist.");
+    err.code = "NOT_FOUND";
+    throw err;
+  }
+  TXNS.length = 0;
+  TXNS.push(...remaining);
+  return { ids: deleted, deleted: deleted.length };
+}

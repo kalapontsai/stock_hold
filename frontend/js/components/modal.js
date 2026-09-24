@@ -146,10 +146,15 @@ export function confirmDialog({
   confirmTone = "danger",
 } = {}) {
   return new Promise((resolve) => {
+    let settled = false;
     const m = createModal({
       title,
       size: "sm",
-      onClose: () => resolve(false),
+      onClose: () => {
+        if (settled) return;
+        settled = true;
+        resolve(false);
+      },
     });
     const p = document.createElement("p");
     p.textContent = body;
@@ -161,13 +166,23 @@ export function confirmDialog({
     cancel.type = "button";
     cancel.className = "btn btn--secondary";
     cancel.textContent = cancelLabel;
-    cancel.addEventListener("click", () => { m.close(); resolve(false); });
+    cancel.addEventListener("click", () => {
+      if (settled) return;
+      settled = true;
+      m.close();
+      resolve(false);
+    });
 
     const confirm = document.createElement("button");
     confirm.type = "button";
     confirm.className = "btn btn--" + (confirmTone === "primary" ? "primary" : "danger");
     confirm.textContent = confirmLabel;
-    confirm.addEventListener("click", () => { m.close(); resolve(true); });
+    confirm.addEventListener("click", () => {
+      if (settled) return;
+      settled = true;
+      m.close();
+      resolve(true);
+    });
 
     m.footer.appendChild(cancel);
     m.footer.appendChild(confirm);
