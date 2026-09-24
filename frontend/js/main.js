@@ -100,7 +100,7 @@ function buildShell() {
   });
 
   header.querySelector("[data-action=logout]").addEventListener("click", async () => {
-    try { await auth.logout(); } finally { window.location.href = "./login.html"; }
+    try { await auth.logout(); } finally { window.location.href = loginHref(); }
   });
 
   // --- Sidebar nav (desktop)
@@ -142,6 +142,12 @@ export function pageHref(page) {
     : `./${page}.html`;
 }
 
+function loginHref() {
+  return document.body?.dataset?.rootEntry === "true"
+    ? "./frontend/login.html"
+    : "./login.html";
+}
+
 function navLink(key, icon, label, href, currentPage) {
   const isActive = key === currentPage ? "true" : "false";
   return `<a class="nav-link" href="${href}" aria-current="${isActive}">
@@ -162,7 +168,7 @@ async function boot() {
   applyTheme();
   buildShell();
   window.addEventListener("stock-hold:unauthorized", () => {
-    if (!window.location.pathname.endsWith("/login.html")) window.location.href = "./login.html";
+    if (!window.location.pathname.endsWith("/login.html")) window.location.href = loginHref();
   }, { once: true });
   if (!isMock()) {
     try {
