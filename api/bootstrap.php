@@ -281,21 +281,6 @@ function clear_login_limits(PDO $pdo, string $key): void
     $pdo->prepare('DELETE FROM auth_rate_limits WHERE scope_key=?')->execute([$key]);
 }
 
-function require_write_access(): void
-{
-    $expected = env_value('STOCK_HOLD_API_TOKEN');
-    $provided = $_SERVER['HTTP_X_API_TOKEN'] ?? '';
-    if ($expected !== null && $expected !== '' && hash_equals($expected, $provided)) {
-        return;
-    }
-
-    $csrf = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
-    if ($csrf !== '' && hash_equals(csrf_token(), $csrf)) {
-        return;
-    }
-    envelope_error('UNAUTHORIZED', 'Mutation requires API token or CSRF token.', 401);
-}
-
 function now_sql(): string
 {
     return gmdate('Y-m-d H:i:s');
