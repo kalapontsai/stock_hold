@@ -31,8 +31,11 @@ EOF
   exit 2
 fi
 
-# Extract HEAD's tree to a staging directory
+# Extract HEAD's tree to a staging directory, then drop dev-only paths
+# that the server does not need (keeps the deploy bundle lean and stops
+# developer tooling from leaking into the deployed artifact).
 git archive HEAD | tar -x -C "$WORK"
+rm -rf "$WORK/scripts"
 
 # Inject VERSION.txt
 #   Only safe fields are recorded. Commit subject / author email / hostname /

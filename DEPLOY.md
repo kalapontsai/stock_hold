@@ -169,6 +169,13 @@ ls -ld ${DEPLOY_RUNTIME}
 - `*.sqlite`, `*.log`, `*.bak`
 - `.venv/`, `node_modules/`, `__pycache__/`
 
+❌ 不包含（**開發工具，deploy 不需要**——package.sh 主動排除）：
+
+- `scripts/` — `package.sh` 與 `validate.sh` 為開發者工具，
+  部署到 server 後不會被任何 runtime 程式碼引用；deploy bundle
+  排除以避免 deploy workflow 外洩與無謂空間浪費。
+  本地端開發仍使用：見 §1。
+
 ## 6. 一次性遠端設定（首次部署需要，之後不用重做）
 
 ### 6.1 PHP
