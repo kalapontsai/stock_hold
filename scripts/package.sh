@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
 # Stock Hold — package script
 #   Source: workspace repo HEAD (committed state)
-#   Output: ${DEPLOY_DIR}/stock_hold_deploy.zip  (default: /mnt/d/deploy/)
+#   Output: ${DEPLOY_DIR}/stock_hold_deploy.zip
+#           (default: $HOME/deploy/  — override with DEPLOY_DIR=...)
 #   Includes: VERSION.txt for deploy-time verification
+#
+#   Post-build report uses \${DEPLOY_WEBROOT} placeholder; override per-run:
+#     DEPLOY_DIR=/your/out DEPLOY_WEBROOT=/home/user/public_html bash scripts/package.sh
+#
+#   This script's defaults are deliberately generic so it is safe to push to a
+#   public GitHub repo without leaking your local filesystem layout.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEPLOY_DIR="${DEPLOY_DIR:-/mnt/d/deploy}"
+DEPLOY_DIR="${DEPLOY_DIR:-$HOME/deploy}"
 OUTPUT="$DEPLOY_DIR/stock_hold_deploy.zip"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -59,6 +66,11 @@ SIZE=$(du -h "$OUTPUT" | awk '{print $1}')
 SHA=$(sha256sum "$OUTPUT" | awk '{print $1}')
 COUNT=$(python3 -c "import zipfile,sys; print(len(zipfile.ZipFile('$OUTPUT').namelist()))")
 
+# Deploy target placeholders (override via env). Defaults are deliberately generic
+# so this script is safe to push to a public GitHub repo without leaking your
+# deploy target.
+: "${DEPLOY_WEBROOT:=/path/to/webroot}"
+
 cat <<EOF
 
 ✓ Built: $OUTPUT
@@ -66,10 +78,10 @@ cat <<EOF
   Files: $COUNT
   SHA-256: $SHA
 
-On remote (LiteSpeed at tracker.elhomeo.com):
+On remote (web server holding \${DEPLOY_WEBROOT} = $DEPLOY_WEBROOT):
   1. Copy this zip to the remote host (scp / SFTP / USB / ...)
-  2. Extract into a staging directory, then rsync to public_html
-  3. Verify with:  cat public_html/VERSION.txt
+  2. Extract into a staging directory, then rsync to \${DEPLOY_WEBROOT}
+  3. Verify with:  cat \${DEPLOY_WEBROOT}/VERSION.txt
   4. Full runbook: see DEPLOY.md in the repo
 
 EOF

@@ -3,6 +3,20 @@
 > 從 **2026-09-25** 起，stock_hold 改採 **zip 交付** 模式：
 > 開發在 `~/.openclaw/workspace/repos/stock_hold/`，完成後打包成 zip，手動複製到遠端主機。
 
+## 部署變數（push-safe placeholders）
+
+> 本文以下行文使用 `${VAR}` 樣式佔位符；**不包含真實 host / 路徑**，
+> 可安全 `git push` 至公開 GitHub。部署時由你依實際環境代入。
+
+| 變數 | 用途 | 範例（請依你的環境替換） |
+|---|---|---|
+| `${DEPLOY_HOST}` | 生產站網域（公開存取） | `your.domain.example` |
+| `${DEPLOY_WEBROOT}` | HTTP document root（部署目標） | `/home/<user>/public_html` |
+| `${DEPLOY_RUNTIME}` | runtime 目錄（SQLite / logs，建議放 webroot 外） | `/home/<user>/runtime/stock_hold` |
+| `${DEPLOY_ERROR_LOG}` | web server 錯誤 log | `/home/<user>/logs/<site>/error.log` |
+
+> 自動偵測站網域/IP 也可；不要把任何能在公網對應到你的主機 / DNS 寫入此文件。
+
 ## 流程總覽
 
 ```
@@ -10,15 +24,15 @@
         │
         │  bash scripts/package.sh
         ▼
-/mnt/d/deploy/stock_hold_deploy.zip      (交付物)
+<DEPLOY_DIR>/stock_hold_deploy.zip       (交付物；本機自選路徑)
         │
         │  (manual: scp / SFTP / 隨身碟 / …)
         ▼
-LiteSpeed public_html/                    (部署位置)
+${DEPLOY_WEBROOT}/                        (部署位置)
         │
         │  smoke test
         ▼
-https://tracker.elhomeo.com/
+https://${DEPLOY_HOST}/
 ```
 
 ## 1. 本地打包
@@ -31,17 +45,7 @@ git log --oneline -5                # 確認要打包哪個 commit
 bash scripts/package.sh            # 產出 zip
 ```
 
-預設輸出：
-
-```text
-/mnt/d/deploy/stock_hold_deploy.zip
-```
-
-可在呼叫時覆寫：
-
-```bash
-DEPLOY_DIR=~/my-other-deploy bash scripts/package.sh
-```
+預設輸出位置由 `scripts/package.sh` 內的 `DEPLOY_DIR` 環境變數決定；可用 `DEPLOY_DIR=...` 覆寫。
 
 ## 2. 複製到遠端
 
@@ -49,53 +53,57 @@ DEPLOY_DIR=~/my-other-deploy bash scripts/package.sh
 
 | 方式 | 範例指令 |
 |---|---|
-| SCP | `scp /mnt/d/deploy/stock_hold_deploy.zip user@tracker.elhomeo.com:~/` |
+| SCP | `scp <DEPLOY_DIR>/stock_hold_deploy.zip user@${DEPLOY_HOST}:~/` |
 | SFTP | FileZilla / WinSCP 拉到 `~/` 或 `/tmp/` |
 | USB | 直接 copy |
+
+> `user@${DEPLOY_HOST}` 是你遠端主機的 SSH / SFTP 帳號；本文不寫實際值。
 
 ## 3. 遠端解壓與部署
 
 ```bash
-# 在遠端主機（SSH 進 LiteSpeed）
+# 在遠端主機（SSH 進 web 伺服器）
 cd ~
 unzip stock_hold_deploy.zip -d stock_hold_staging
 
 # (可選) 比對內容
-rsync -avn --delete stock_hold_staging/ ~/public_html/
+rsync -avn --delete stock_hold_staging/ ${DEPLOY_WEBROOT}/
 
 # 部署前先備份舊版（建議）
-mv ~/public_html ~/public_html.bak.$(date +%Y%m%d-%H%M)
+mv ${DEPLOY_WEBROOT} ${DEPLOY_WEBROOT}.bak.$(date +%Y%m%d-%H%M)
 
 # 正式部署
-rsync -av --delete stock_hold_staging/ ~/public_html/
+rsync -av --delete stock_hold_staging/ ${DEPLOY_WEBROOT}/
 ```
 
 > `--delete` 確保移除舊版殘留檔。
+> `${DEPLOY_WEBROOT}` 視你的 web server 而定（LiteSpeed / Apache / Nginx 公用 root、
+> Plesk 的 `httpdocs/`、cPanel 的 `public_html/` 等）；本機自訂。
 
 ## 4. 部署後驗證
 
 ```bash
 # (1) 確認部署的版本
-cat ~/public_html/VERSION.txt
+cat ${DEPLOY_WEBROOT}/VERSION.txt
 # 對照 git log 確認 Commit SHA 正確
 
 # (2) health endpoint
-curl -i https://tracker.elhomeo.com/api/v1/health
+curl -i https://${DEPLOY_HOST}/api/v1/health
 # 預期：200 + JSON {"status":"ok","data":{"service":"stock_hold",...}}
 
 # (3) auth session
-curl -i https://tracker.elhomeo.com/api/v1/auth/session
+curl -i https://${DEPLOY_HOST}/api/v1/auth/session
 # 預期：200 + JSON 含 csrf_token
 
 # (4) 靜態頁
-curl -I https://tracker.elhomeo.com/
-curl -I https://tracker.elhomeo.com/frontend/login.html
+curl -I https://${DEPLOY_HOST}/
+curl -I https://${DEPLOY_HOST}/frontend/login.html
 
-# (5) 確認 .env 沒被上傳（dev 不能 commit，部署後只能由你手動放）
-test ! -f ~/public_html/.env && echo "OK: no .env"
+# (5) 確認 .env 沒被上傳
+test ! -f ${DEPLOY_WEBROOT}/.env && echo "OK: no .env"
 
 # (6) 確認 runtime 目錄存在且可寫
-ls -ld ~/runtime/stock_hold
+ls -ld ${DEPLOY_RUNTIME}
 ```
 
 完整 smoke test 步驟見 `scripts/validate.sh` 的 "Manual smoke test" 區塊。
@@ -119,25 +127,25 @@ ls -ld ~/runtime/stock_hold
 
 ### 6.1 PHP
 
-確認 LiteSpeed 已啟用 PHP 8.2+ 且 extensions：
+確認 web server 已啟用 PHP 8.2+ 且 extensions：
 
 ```text
 pdo_sqlite  json  curl  mbstring  openssl
 ```
 
-### 6.2 runtime 目錄（建議放 `public_html` 外）
+### 6.2 runtime 目錄（建議放 `${DEPLOY_WEBROOT}` 外）
 
 ```bash
-mkdir -p ~/runtime/stock_hold
-chmod 750 ~/runtime/stock_hold
+mkdir -p ${DEPLOY_RUNTIME}
+chmod 750 ${DEPLOY_RUNTIME}
 ```
 
 `.htaccess` 已擋 `runtime/` 的 HTTP 存取，但放外面更穩。
 
-### 6.3 環境變數（LiteSpeed VirtualHost 或 `~/.env`）
+### 6.3 環境變數（web server VirtualHost / config / `~/.env`）
 
 ```apache
-SetEnv STOCK_HOLD_RUNTIME_DIR "/home/<user>/runtime/stock_hold"
+SetEnv STOCK_HOLD_RUNTIME_DIR "${DEPLOY_RUNTIME}"
 SetEnv STOCK_HOLD_API_TOKEN    "<openssl rand -hex 32>"
 SetEnv STOCK_HOLD_INIT_TOKEN   "<openssl rand -hex 32>"
 SetEnv STOCK_HOLD_UPDATE_REPO  "kalapontsai/stock_hold"
@@ -150,7 +158,7 @@ SetEnv STOCK_HOLD_UPDATE_REPO  "kalapontsai/stock_hold"
 若 SQLite 是新建立：
 
 ```bash
-cd ~/public_html
+cd ${DEPLOY_WEBROOT}
 php cli/migrate.php
 ```
 
@@ -170,33 +178,33 @@ bash scripts/package.sh
 # 然後 §3 再做一次
 ```
 
-或直接從備份還原（若你按 §3 留了 `public_html.bak.<timestamp>`）：
+或直接從備份還原（若你按 §3 留了 `${DEPLOY_WEBROOT}.bak.<timestamp>`）：
 
 ```bash
-rsync -av --delete ~/public_html.bak.<timestamp>/ ~/public_html/
+rsync -av --delete ${DEPLOY_WEBROOT}.bak.<timestamp>/ ${DEPLOY_WEBROOT}/
 ```
 
 ## 8. 與舊流程差異
 
 | 舊（停用） | 新 |
 |---|---|
-| `D:\docker-volumn\ubuntu-apache2\html\stock_hold` 工作目錄 | `~/.openclaw/workspace/repos/stock_hold/` 工作目錄 |
-| `git pull` 推到 Apache | `bash scripts/package.sh` → 手動複製 zip |
-| `localhost/stock_hold/` 路徑 | `https://tracker.elhomeo.com/`（網域根） |
+| 本地 `<DOCKER_APACHE>/html/stock_hold` 工作目錄 | `~/.openclaw/workspace/repos/stock_hold/` 工作目錄 |
+| `git pull` 推到本機 web server | `bash scripts/package.sh` → 手動複製 zip |
+| `localhost/<WEB_SUBDIR>/` 路徑 | `https://${DEPLOY_HOST}/`（網域根或子目錄依部署） |
 | 無部署版本標記 | `VERSION.txt` 含 commit SHA + 時間 |
-| 本地 Apache 自動 serve | LiteSpeed 手動部署 |
+| 本機 web server 自動 serve | 遠端手動部署 |
 
-> 本地 Apache 部署 (`D:\docker-volumn\ubuntu-apache2\html\stock_hold`) 自 2026-09-25 起**凍結**，
-> 保留作為緊急 fallback，不再同步更新。任何實際改動請在 workspace repo 進行。
+> 本機舊版部署路徑（停用）不再同步更新。
+> 任何實際改動請在 workspace repo 進行。
 
 ## 9. 常見問題
 
 **Q: package.sh 拒絕打包，說有 uncommitted changes？**
 A: 先 commit。`git add -A && git commit -m "..."` 後重跑。
-   真的想打包 working tree（含 uncommitted 改動）：不建議，但可用 `git stash`/`git diff` 自行處理。
+   真的想打包 working tree（含 uncommitted 改動）：不建議，但可用 `git stash` 自行處理。
 
 **Q: 部署後 health endpoint 報 500？**
-A: 看 LiteSpeed error log（`~/logs/<site>/error.log`）。
+A: 看 web server error log（`tail -f ${DEPLOY_ERROR_LOG}`）。
    最常見：`STOCK_HOLD_RUNTIME_DIR` 未設或不可寫。
 
 **Q: 部署後登入頁打開但 API 404？**
@@ -206,3 +214,13 @@ A: 確認 `.htaccess` 的 `RewriteEngine On` 與 `RewriteRule ^api/v1` 沒被覆
 **Q: zip 太大怎麼辦？**
 A: 目前 ~145KB，全 tracked 檔案納入。`runtime/`、`node_modules/` 不會被打包。
    若想瘦身：可在 `scripts/package.sh` 加 exclude pattern（需改 git archive 為 tar pipeline）。
+
+## 10. 推送 GitHub 前的最後檢查
+
+```bash
+# 確認文件不含 host / 路徑洩漏
+grep -RnE 'tracker\.|\.elhomeo|public_html|/mnt/d/' DEPLOY.md scripts/ || echo "OK: no leak"
+```
+
+> 本文件於 2026-09-25 修訂，移除所有 deploy-host / host-path literal，
+> 改為 `${VAR}` 佔位符。可直接 `git push` 不洩漏基礎設施資訊。

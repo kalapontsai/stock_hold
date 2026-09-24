@@ -2,15 +2,32 @@
 # Stock Hold — static validation
 #   Runs without PHP on host (uses node + python3).
 #   For full PHP-side checks, run on remote (see "Manual smoke test" below).
+#
+#   Smoke-test output uses ${DEPLOY_*}-style placeholders. Override per-run:
+#     DEPLOY_HOST=your.domain.example \
+#     DEPLOY_WEBROOT=/home/user/public_html \
+#     DEPLOY_RUNTIME=/home/user/runtime/stock_hold \
+#     DEPLOY_ERROR_LOG=/home/user/logs/error.log \
+#     bash scripts/validate.sh
+#
+#   Default values are generic placeholders so this script is safe to push
+#   to a public GitHub repo without leaking your deploy target.
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# Deploy target placeholders (override via env). Defaults are deliberately generic.
+: "${DEPLOY_HOST:=your.domain.example}"
+: "${DEPLOY_WEBROOT:=/path/to/webroot}"
+: "${DEPLOY_RUNTIME:=/path/to/runtime}"
+: "${DEPLOY_ERROR_LOG:=/path/to/error.log}"
+
 errors=0
 echo "=== Stock Hold — Static Validation ==="
 echo "Repo: $REPO_ROOT"
 echo "HEAD: $(git rev-parse --short HEAD) — $(git log -1 --pretty=%s)"
+echo "Deploy host (override via DEPLOY_HOST): $DEPLOY_HOST"
 echo ""
 
 # ---------- Required file presence ----------
@@ -89,44 +106,44 @@ if command -v php >/dev/null 2>&1; then
 else
   cat <<'NOTE'
   ℹ  php not on PATH locally — skipped.
-  Run on remote (LiteSpeed) for full check:
+  Run on remote for full check:
     find api cli -type f -name '*.php' -exec php -l {} \; | grep -v 'No syntax errors'
 NOTE
 fi
 
 # ---------- Manual smoke test checklist (always printed) ----------
-cat <<'CHECKLIST'
+cat <<CHECKLIST
 
 === Manual smoke test (run on remote after deploy) ===
 1. Verify deployed version
-   $ cat ~/public_html/VERSION.txt
+   $ cat ${DEPLOY_WEBROOT}/VERSION.txt
    → match Commit SHA against what you packaged
 
 2. Health endpoint
-   $ curl -i https://tracker.elhomeo.com/api/v1/health
+   $ curl -i https://${DEPLOY_HOST}/api/v1/health
    → 200 + JSON {"status":"ok","data":{"service":"stock_hold",...}}
 
 3. Session endpoint
-   $ curl -i https://tracker.elhomeo.com/api/v1/auth/session
+   $ curl -i https://${DEPLOY_HOST}/api/v1/auth/session
    → 200 + JSON with csrf_token + authenticated:false
 
 4. Static pages
-   $ curl -I https://tracker.elhomeo.com/
-   $ curl -I https://tracker.elhomeo.com/frontend/login.html
+   $ curl -I https://${DEPLOY_HOST}/
+   $ curl -I https://${DEPLOY_HOST}/frontend/login.html
 
 5. .env / runtime directory permissions
-   $ ls -ld ~/runtime/stock_hold
-   $ test -r ~/public_html/.env.example && ! test -r ~/public_html/.env
+   $ ls -ld ${DEPLOY_RUNTIME}
+   $ test -r ${DEPLOY_WEBROOT}/.env.example && ! test -r ${DEPLOY_WEBROOT}/.env
 
 6. Browser smoke
-   - Open https://tracker.elhomeo.com/frontend/login.html
+   - Open https://${DEPLOY_HOST}/frontend/login.html
    - Register first user (needs STOCK_HOLD_INIT_TOKEN env)
    - Login → Dashboard renders
    - Add an account, a transaction, view holdings
    - Settings → Maintenance → 檢查更新
 
-7. LiteSpeed error log clean
-   $ tail -n 50 ~/logs/<site>/error.log
+7. Web server error log clean
+   $ tail -n 50 ${DEPLOY_ERROR_LOG}
 
 CHECKLIST
 
