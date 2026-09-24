@@ -118,6 +118,59 @@ if ($method === 'GET' && $path === '/auth/me') {
     envelope_ok(require_authenticated_user($pdo));
 }
 
+if ($method === 'POST' && $path === '/auth/profile') {
+    $currentUser = require_write_access($pdo);
+    $input = body_json();
+    require_fields($input, ['username', 'email']);
+
+    $username = trim((string)$input['username']);
+    $email = strtolower(trim((string)$input['email']));
+    if (!preg_match('/^[A-Za-z0-9_]{3,32}$/', $username)) {
+        envelope_error('VALIDATION_ERROR', 'Username must contain 3-32 letters, numbers, or underscores.', 422);
+    }
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($email) > 254) {
+        envelope_error('VALIDATION_ERROR', 'Email format is invalid.', 422);
+    }
+
+    $newPassword = (string)($input['new_password'] ?? '');
+    $passwordHash = null;
+    if ($newPassword !== '') {
+        $currentPassword = (string)($input['current_password'] ?? '');
+        $hashStmt = $pdo->prepare('SELECT password_hash FROM users WHERE id=?');
+        $hashStmt->execute([$currentUser['id']]);
+        $storedHash = (string)$hashStmt->fetchColumn();
+        if (!password_verify($currentPassword, $storedHash)) {
+            envelope_error('INVALID_PASSWORD', 'Current password is incorrect.', 422);
+        }
+        if (strlen($newPassword) < 4 || !preg_match('/[A-Z]/', $newPassword) || !preg_match('/[a-z]/', $newPassword) || !preg_match('/[0-9]/', $newPassword)) {
+            envelope_error('VALIDATION_ERROR', 'Password must be at least 4 characters and include upper, lower, and numeric characters.', 422);
+        }
+        $passwordHash = password_hash($newPassword, PASSWORD_DEFAULT);
+    }
+
+    try {
+        $pdo->beginTransaction();
+        if ($passwordHash === null) {
+            $update = $pdo->prepare('UPDATE users SET username=?,email=?,updated_at=? WHERE id=?');
+            $update->execute([$username, $email, now_sql(), $currentUser['id']]);
+        } else {
+            $update = $pdo->prepare('UPDATE users SET username=?,email=?,password_hash=?,failed_login_attempts=0,locked_until=NULL,updated_at=? WHERE id=?');
+            $update->execute([$username, $email, $passwordHash, now_sql(), $currentUser['id']]);
+        }
+        $pdo->commit();
+    } catch (PDOException $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        if (str_contains($e->getMessage(), 'UNIQUE')) {
+            envelope_error('CONFLICT', 'Username or email already exists.', 409);
+        }
+        throw $e;
+    }
+
+    $get = $pdo->prepare('SELECT id,username,email,created_at,updated_at FROM users WHERE id=?');
+    $get->execute([$currentUser['id']]);
+    envelope_ok($get->fetch());
+}
+
 if ($method !== 'GET') {
     $currentUser = require_write_access($pdo);
 } else {

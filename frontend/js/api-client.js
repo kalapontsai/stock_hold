@@ -249,6 +249,7 @@ export const auth = {
   register: (body) => request("POST", "/auth/register", body),
   logout: () => request("POST", "/auth/logout", {}),
   me: () => request("GET", "/auth/me"),
+  updateProfile: (body) => request("POST", "/auth/profile", body),
   session: () => request("GET", "/auth/session"),
 };
 
