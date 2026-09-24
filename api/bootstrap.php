@@ -540,6 +540,15 @@ function update_check(PDO $pdo): never
         $cachedFresh = (bool)$cached['fresh'];
     }
 
+    // Short-circuit on fresh cache. Without this, every button click burns
+    // one GitHub request; with many active users we'd blow past the 60 req/hr
+    // unauthenticated limit. Trade-off: a freshly-published release may take
+    // up to STOCK_HOLD_UPDATE_CACHE_TTL seconds to appear — acceptable for a
+    // self-hosted app where the user can clear cache or wait.
+    if ($cachedFresh && is_array($cachedPayload) && isset($cachedPayload['tag_name'])) {
+        update_check_respond($repo, $cachedPayload, false);
+    }
+
     $url = "https://api.github.com/repos/{$repo}/releases/latest";
     $ctx = stream_context_create([
         'http' => [
@@ -553,6 +562,15 @@ function update_check(PDO $pdo): never
     $status = 0;
     if (isset($http_response_header[0]) && preg_match('/HTTP\/[\d.]+\s+(\d+)/', $http_response_header[0], $m)) {
         $status = (int)$m[1];
+    }
+
+    // 404 = repo exists but has no releases yet. This is an expected
+    // state, not an error — cache the empty marker and report no_releases
+    // so the frontend shows a friendly message instead of "HTTP 404".
+    if ($status === 404) {
+        $empty = ['tag_name' => '', 'no_releases' => true];
+        update_cache_put($pdo, $endpoint, null, json_encode($empty), $ttl);
+        update_check_respond($repo, $empty, false);
     }
 
     if (is_string($body) && $body !== '' && $status === 200) {
@@ -572,25 +590,27 @@ function update_check(PDO $pdo): never
             update_cache_put($pdo, $endpoint, $etag, json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), $ttl);
             update_check_respond($repo, $payload, false);
         }
-        if (is_array($data) && isset($data['message']) && stripos((string)$data['message'], 'Not Found') !== false) {
-            // 404 — repo has no releases yet. Cache as empty so we don't
-            // re-hit GitHub on every page load.
-            update_cache_put($pdo, $endpoint, null, json_encode(['tag_name' => '', 'no_releases' => true]), $ttl);
-            update_check_respond($repo, ['tag_name' => '', 'no_releases' => true], false);
-        }
     }
 
-    // Fetch failed or returned unexpected payload — fall back to cache.
+    // Non-success other than 404 — fall back to cache (stale if expired)
+    // so the user sees last-known data instead of a hard error.
     if (is_array($cachedPayload) && isset($cachedPayload['tag_name'])) {
         update_check_respond($repo, $cachedPayload, !$cachedFresh, ['fetch_status' => $status]);
     }
 
+    // No cache and no successful fetch — surface a meaningful error.
+    $errMsg = match (true) {
+        $status === 0   => '無法連線 GitHub（network error 或 LiteSpeed 無 outbound）',
+        $status === 403 => 'GitHub API rate limit（60 req/hr），請約一小時後再試',
+        $status >= 500  => "GitHub upstream error（HTTP {$status}），請稍後再試",
+        default         => "GitHub 回應 HTTP {$status}",
+    };
     envelope_ok([
         'current_version' => STOCK_HOLD_VERSION,
         'latest_version' => null,
         'has_update' => false,
         'status' => 'error',
-        'message' => $status === 0 ? '無法連線 GitHub（network error）' : "GitHub 回應 HTTP {$status}",
+        'message' => $errMsg,
         'repo' => $repo,
         'stale' => false,
         'checked_at' => gmdate('c'),
