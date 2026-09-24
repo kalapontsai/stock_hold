@@ -105,14 +105,14 @@ export async function mountHoldings(root) {
     let sorted = [...rows];
     if (sortKey === "unrealizedPnl_desc") {
       sorted.sort((a, b) => {
-        const ua = (Number(b.current_price) - Number(b.avg_cost)) * Number(b.qty) * Number(b.fx_rate);
-        const ub = (Number(a.current_price) - Number(a.avg_cost)) * Number(a.qty) * Number(a.fx_rate);
+        const ua = (Number(b.current_price) - Number(b.avg_cost)) * Number(b.qty) * Number(b.fx_rate || 1);
+        const ub = (Number(a.current_price) - Number(a.avg_cost)) * Number(a.qty) * Number(a.fx_rate || 1);
         return ua - ub;
       });
     } else if (sortKey === "marketValue_desc") {
       sorted.sort((a, b) => {
-        const va = Number(b.current_price) * Number(b.qty) * Number(b.fx_rate);
-        const vb = Number(a.current_price) * Number(a.qty) * Number(a.fx_rate);
+        const va = Number(b.current_price) * Number(b.qty) * Number(b.fx_rate || 1);
+        const vb = Number(a.current_price) * Number(a.qty) * Number(a.fx_rate || 1);
         return va - vb;
       });
     } else if (sortKey === "symbol_asc") {

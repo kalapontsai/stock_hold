@@ -542,13 +542,23 @@ if ($method === 'GET' && $path === '/dividends') {
 if ($method === 'GET' && $path === '/dashboard/summary') {
     $count = static function (PDO $pdo, string $sql, int $userId): int { $stmt = $pdo->prepare($sql); $stmt->execute([$userId]); return (int)$stmt->fetchColumn(); };
     $todaySql = gmdate('Ymd');
+    $todayIso = gmdate('Y-m-d');
     $monthStartSql = gmdate('Y-m-01 00:00:00');
 
     $accounts = $count($pdo, 'SELECT COUNT(*) FROM accounts WHERE status="ACTIVE" AND user_id=?', $userId);
     $transactions = $count($pdo, 'SELECT COUNT(*) FROM transactions WHERE user_id=?', $userId);
 
+    // Pairs the user touched today — exclude them from intraday price-impact so
+    // BUY/SELL today doesn't show up as P&L movement.
+    $tradedToday = [];
+    $tradedStmt = $pdo->prepare('SELECT DISTINCT account_id, security_id FROM transactions WHERE user_id=? AND txn_date=?');
+    $tradedStmt->execute([$userId, $todayIso]);
+    foreach ($tradedStmt->fetchAll() as $tr) {
+        $tradedToday[(string)$tr['account_id'] . "\0" . (string)$tr['security_id']] = true;
+    }
+
     // Open positions with latest + previous trading-day close for this user.
-    $stmt = $pdo->prepare('SELECT p.qty, p.avg_cost, p.realized_pl, p.updated_at, '
+    $stmt = $pdo->prepare('SELECT p.account_id, p.security_id, p.qty, p.avg_cost, p.realized_pl, p.updated_at, '
         . 'COALESCE((SELECT close FROM prices pr WHERE pr.security_id=p.security_id AND pr.user_id=p.user_id ORDER BY pr.date DESC LIMIT 1), 0) AS latest_close, '
         . 'COALESCE((SELECT close FROM prices pr WHERE pr.security_id=p.security_id AND pr.user_id=p.user_id AND pr.date < ? ORDER BY pr.date DESC LIMIT 1), 0) AS prev_close '
         . 'FROM positions p WHERE p.qty > 0 AND p.user_id=?');
@@ -560,6 +570,7 @@ if ($method === 'GET' && $path === '/dashboard/summary') {
     $prevValue = 0.0;
     $market = 0.0;
     $positive = 0;
+    $todayPnl = 0.0;
     foreach ($positions as $row) {
         $qty = (float)$row['qty'];
         $latest = (float)$row['latest_close'];
@@ -570,9 +581,15 @@ if ($method === 'GET' && $path === '/dashboard/summary') {
         $prevValue += $qty * $prev;
         $market += $qty * $latest;
         if ($latest > 0 && $avg <= $latest) $positive++;
+        $key = (string)$row['account_id'] . "\0" . (string)$row['security_id'];
+        // Day's P&L = price move on positions held THROUGH today. Skip positions
+        // the user traded today so a fresh BUY doesn't read as +market value of
+        // shares that weren't held yesterday, and a partial SELL doesn't read
+        // as P&L on shares no longer held.
+        if (!isset($tradedToday[$key]) && $latest > 0 && $prev > 0) {
+            $todayPnl += $qty * ($latest - $prev);
+        }
     }
-
-    $todayPnl = $market - $prevValue;
     $stmt = $pdo->prepare('SELECT COALESCE(SUM(realized_pl), 0) FROM positions WHERE user_id=? AND updated_at >= ?');
     $stmt->execute([$userId, $monthStartSql]);
     $realizedMtd = (float)$stmt->fetchColumn();
