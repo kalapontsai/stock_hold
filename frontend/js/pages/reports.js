@@ -176,12 +176,11 @@ export async function mountReports(root) {
         { key: "qty", header: "數量", numeric: true, align: "right", cell: (r) => `<span class="num">${formatQty(r.qty)}</span>` },
         { key: "price", header: "現價", numeric: true, align: "right", cell: (r) => `<span class="num">${formatMoney(r.current_price, r.currency)}</span>` },
         { key: "marketValue", header: "市值(TWD)", numeric: true, align: "right",
-          cell: (r) => formatMoney(String(Math.round(Number(r.current_price) * Number(r.qty) * Number(r.fx_rate))), "TWD") },
-        { key: "unrealizedPnl", header: "未實現(TWD)", numeric: true, align: "right",
           cell: (r) => {
-            const v = (Number(r.current_price) - Number(r.avg_cost)) * Number(r.qty) * Number(r.fx_rate);
-            const cls = v > 0 ? "value-positive" : v < 0 ? "value-negative" : "";
-            return `<span class="num ${cls}">${formatMoney(String(Math.round(v)), "TWD", { signed: true })}</span>`;
+            const v = Math.round(Number(r.current_price) * Number(r.qty) * Number(r.fx_rate || 1));
+            return Number.isFinite(v)
+              ? `<span class="num">${formatMoney(String(v), "TWD", { decimals: 0 })}</span>`
+              : "—";
           },
         },
         { key: "account", header: "帳戶", cell: (r) => nameOf(accounts, r.account_id) },
