@@ -94,6 +94,18 @@ php cli/seed.php
 
 正式資料匯入工具尚在遷移階段；不要將示範資料與正式資料混用。
 
+### 5. 備份與還原（CLI）
+
+F-02 後，備份與還原不再走 HTTP；改為在伺服器 shell 執行：
+
+```bash
+# 備份（輸出新檔名至 stdout；檔案位於 runtime/backup/）
+php cli/backup.php
+
+# 還原指定備份；自動產生 safety backup
+php cli/restore.php --file=stock_hold_20260924_120000.sqlite --confirm
+```
+
 ## 使用系統
 
 開啟：
@@ -126,12 +138,11 @@ http://localhost/stock_hold/
 
 ### 更新最新報價
 
-設定頁的「報價更新」預設使用台灣證券交易所 MIS 行情來源，由 PHP cURL 在伺服器端抓取，不需要 API key；抓取結果會寫入 SQLite 的 `prices` 表。
+設定頁的「報價更新」預設使用台灣證券交易所 MIS 行情來源，由 PHP cURL 在伺服器端抓取，不需要 API key；抓取結果會寫入 SQLite 的 `prices` 表。每次更新會保存今日最新報價與昨日收盤價，並清理更早的市價資料。
 
 1. 開啟「設定 → 報價更新」。
 2. 選擇「台灣證交所 MIS」或「手動匯入」。
-3. 設定更新間隔並儲存。
-4. 按「立即更新全部持股」取得最新行情。
+3. 按「立即更新全部持股」取得今日最新報價與昨日收盤價。
 
 API 也可手動執行：
 
@@ -143,7 +154,25 @@ curl -X POST \
   http://localhost/stock_hold/api/v1/prices/batch-update
 ```
 
-`symbols` 留空代表更新所有啟用中的標的；目前來源為台股交易所行情，非交易時段會取得交易所最後成交價。行情服務若暫時無法連線，既有價格不會被覆蓋。
+`symbols` 留空代表更新所有啟用中的標的；目前來源為台股交易所行情，非交易時段會取得交易所最後成交價。行情服務若暫時無法連線，既有價格不會被覆蓋。每個標的只保留今日與昨日兩筆市價資料，以降低 SQLite 儲存量。
+
+### 總覽自動計算欄位
+
+總覽頁的三個主要數字由 `GET /api/v1/dashboard/summary` 產生，計算實作位於 `api/index.php` 的 `/dashboard/summary` 路由。金額目前以資料庫儲存值計算；股票市值使用 `prices.close` 的最新一筆價格，現金則取現金異動交易的 `transactions.amount` 加總。
+
+| 欄位 | 公式（目前實作） | 主要資料來源 |
+|---|---|---|
+| **總資產** | `最新市值 + 現金餘額` | `positions.qty × prices.close`；`transactions.amount`（`security_id IS NULL`） |
+| **今日損益** | `Σ[持倉數量 × (最新收盤價 − 前一交易日收盤價)]` | `positions.qty`、`prices.close`；前一交易日取 `prices.date < 今天` 的最新一筆 |
+| **未實現損益** | `Σ[持倉數量 × (最新收盤價 − 平均成本)]` | `positions.qty`、`positions.avg_cost`、`prices.close` |
+
+補充規則：
+
+- 只計算目前 `qty > 0` 的持倉，且每個使用者只讀取自己的資料。
+- 今日有買進、賣出或其他交易的「帳戶＋標的」組合，今日損益會排除該組合，避免把當日交易量誤當成價格損益。
+- 「最新收盤價」與「昨日收盤價」均從 `prices` 表讀取；沒有價格時以 `0` 計算。價格更新來源與操作方式見上節。
+- 百分比欄位另以今日損益除以前一日持倉市值、或以損益除以成本基礎計算；沒有正的分母時顯示 `0%`。
+- 目前 API 端的總覽加總未另套用 `fx_rates` 匯兌；若不同幣別資料混用，請先確認各筆金額的儲存幣別與報價資料一致。
 
 ## API 檢查
 

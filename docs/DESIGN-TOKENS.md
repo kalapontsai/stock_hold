@@ -733,7 +733,6 @@ export default {
 | `action.cancel`              | 取消                             | Cancel                          |
 | `metric.totalAssets`         | 總資產                           | Total Assets                    |
 | `metric.todayPnl`            | 今日損益                         | Today's P/L                     |
-| `metric.mtdPnl`              | 月初至今                         | Month-to-Date P/L               |
 | `metric.unrealizedPnl`       | 未實現損益                       | Unrealized P/L                  |
 | `metric.realizedPnl`         | 已實現損益                       | Realized P/L                    |
 | `metric.dividendYield`       | 殖利率                           | Dividend Yield                  |

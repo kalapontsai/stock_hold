@@ -53,7 +53,6 @@ const STRINGS = {
     /* Metrics */
     "metric.totalAssets":         "總資產",
     "metric.todayPnl":            "今日損益",
-    "metric.mtdPnl":              "月初至今",
     "metric.ytdPnl":              "年初至今",
     "metric.unrealizedPnl":       "未實現損益",
     "metric.realizedPnl":         "已實現損益",
@@ -71,7 +70,6 @@ const STRINGS = {
     "dashboard.allocation":       "資產配置",
     "dashboard.recent":           "最近 5 筆交易",
     "dashboard.viewAll":          "查看全部",
-    "dashboard.monthlyPnl":       "月度損益 (近 12 個月)",
     "dashboard.chartPie":         "圓餅圖",
     "dashboard.chartBar":         "長條圖",
     "dashboard.realized":         "已實現",
@@ -283,7 +281,6 @@ const STRINGS = {
     "action.checkUpdate":         "Check updates",
     "metric.totalAssets":         "Total Assets",
     "metric.todayPnl":            "Today's P/L",
-    "metric.mtdPnl":              "Month-to-Date P/L",
     "metric.ytdPnl":              "Year-to-Date P/L",
     "metric.unrealizedPnl":       "Unrealized P/L",
     "metric.realizedPnl":         "Realized P/L",

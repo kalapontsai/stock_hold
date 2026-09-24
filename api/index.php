@@ -32,12 +32,20 @@ if ($method === 'GET' && $path === '/auth/session') {
 
 if ($method === 'POST' && $path === '/auth/register') {
     require_csrf_token();
-    if (!public_registration_enabled($pdo)) {
+    $input = body_json();
+    $initToken = (string)($input['init_token'] ?? '');
+    $emailLower = strtolower(trim((string)($input['email'] ?? '')));
+
+    // F-03 fix: per-IP and per-email register rate limit (default 24h window).
+    if (!check_register_rate_limit($pdo, client_ip(), $emailLower)) {
+        envelope_error('RATE_LIMITED', 'Too many registration attempts from this IP or for this email. Try again later.', 429);
+    }
+    if (!public_registration_enabled($pdo, $initToken)) {
         envelope_error('REGISTRATION_DISABLED', 'Public registration is disabled.', 403);
     }
-    require_fields($input = body_json(), ['username', 'email', 'password']);
+    require_fields($input, ['username', 'email', 'password']);
     $username = trim((string)$input['username']);
-    $email = strtolower(trim((string)$input['email']));
+    $email = $emailLower;
     $password = (string)$input['password'];
     if (!preg_match('/^[A-Za-z0-9_]{3,32}$/', $username)) {
         envelope_error('VALIDATION_ERROR', 'Username must contain 3-32 letters, numbers, or underscores.', 422);
@@ -45,8 +53,9 @@ if ($method === 'POST' && $path === '/auth/register') {
     if (!filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($email) > 254) {
         envelope_error('VALIDATION_ERROR', 'Email format is invalid.', 422);
     }
-    if (strlen($password) < 4 || !preg_match('/[A-Z]/', $password) || !preg_match('/[a-z]/', $password) || !preg_match('/[0-9]/', $password)) {
-        envelope_error('VALIDATION_ERROR', 'Password must be at least 4 characters and include upper, lower, and numeric characters.', 422);
+    // F-03 fix: stronger password policy (≥8 chars + upper + lower + digit).
+    if (strlen($password) < 8 || !preg_match('/[A-Z]/', $password) || !preg_match('/[a-z]/', $password) || !preg_match('/[0-9]/', $password)) {
+        envelope_error('VALIDATION_ERROR', 'Password must be at least 8 characters and include upper, lower, and numeric characters.', 422);
     }
     $now = now_sql();
     try {
@@ -354,6 +363,8 @@ function fetch_twse_mis_quotes(PDO $pdo, array $securities): array
             continue;
         }
         $date = preg_replace('/[^0-9]/', '', (string)($quote['d'] ?? $quote['^'] ?? gmdate('Ymd')));
+        $dateObject = DateTimeImmutable::createFromFormat('!Ymd', $date, new DateTimeZone('UTC'));
+        $previousDate = ($dateObject ?: new DateTimeImmutable('today', new DateTimeZone('UTC')))->modify('-1 day')->format('Ymd');
         $items[] = [
             'security_id' => $security['id'], 'date' => $date,
             'open' => is_numeric($quote['o'] ?? null) ? $quote['o'] : $close,
@@ -362,8 +373,33 @@ function fetch_twse_mis_quotes(PDO $pdo, array $securities): array
             'close' => $close, 'volume' => is_numeric($quote['v'] ?? null) ? $quote['v'] : '0',
             'currency' => $security['currency'], 'user_id' => (int)$security['user_id'],
         ];
+        $previousClose = $quote['y'] ?? null;
+        if (is_numeric($previousClose) && (float)$previousClose > 0) {
+            $items[] = [
+                'security_id' => $security['id'], 'date' => $previousDate,
+                'open' => $previousClose, 'high' => $previousClose,
+                'low' => $previousClose, 'close' => $previousClose,
+                'volume' => '0', 'currency' => $security['currency'],
+                'user_id' => (int)$security['user_id'],
+            ];
+        } else {
+            $failed[] = ['symbol' => $symbol, 'reason' => 'No valid previous close'];
+        }
     }
-    return array_merge(persist_prices($pdo, $items), ['failed' => array_merge($failed, [])]);
+    $result = persist_prices($pdo, $items);
+    $keepDatesBySecurity = [];
+    foreach ($items as $item) {
+        $key = (string)$item['user_id'] . "\0" . (string)$item['security_id'];
+        $keepDatesBySecurity[$key][] = (string)$item['date'];
+    }
+    foreach ($keepDatesBySecurity as $key => $dates) {
+        [$itemUserId, $securityId] = explode("\0", $key, 2);
+        $keepDates = array_values(array_unique($dates));
+        $datePlaceholders = implode(',', array_fill(0, count($keepDates), '?'));
+        $delete = $pdo->prepare("DELETE FROM prices WHERE user_id=? AND security_id=? AND date NOT IN ({$datePlaceholders})");
+        $delete->execute(array_merge([(int)$itemUserId, $securityId], $keepDates));
+    }
+    return array_merge($result, ['failed' => $failed]);
 }
 
 if ($method === 'GET' && $path === '/accounts') {
@@ -549,7 +585,6 @@ if ($method === 'GET' && $path === '/dashboard/summary') {
     $count = static function (PDO $pdo, string $sql, int $userId): int { $stmt = $pdo->prepare($sql); $stmt->execute([$userId]); return (int)$stmt->fetchColumn(); };
     $todaySql = gmdate('Ymd');
     $todayIso = gmdate('Y-m-d');
-    $monthStartSql = gmdate('Y-m-01 00:00:00');
 
     $accounts = $count($pdo, 'SELECT COUNT(*) FROM accounts WHERE status="ACTIVE" AND user_id=?', $userId);
     $transactions = $count($pdo, 'SELECT COUNT(*) FROM transactions WHERE user_id=?', $userId);
@@ -596,11 +631,6 @@ if ($method === 'GET' && $path === '/dashboard/summary') {
             $todayPnl += $qty * ($latest - $prev);
         }
     }
-    $stmt = $pdo->prepare('SELECT COALESCE(SUM(realized_pl), 0) FROM positions WHERE user_id=? AND updated_at >= ?');
-    $stmt->execute([$userId, $monthStartSql]);
-    $realizedMtd = (float)$stmt->fetchColumn();
-    $mtdPnl = $unrealized + $realizedMtd;
-
     $stmt = $pdo->prepare('SELECT COALESCE(SUM(amount),0) FROM transactions WHERE security_id IS NULL AND user_id=?');
     $stmt->execute([$userId]);
     $cash = (float)$stmt->fetchColumn();
@@ -618,12 +648,8 @@ if ($method === 'GET' && $path === '/dashboard/summary') {
         'cash_balance' => (string)$cash,
         'today_pnl' => (string)$todayPnl,
         'today_pnl_pct' => $pct($todayPnl, $prevValue),
-        'mtd_pnl' => (string)$mtdPnl,
-        'mtd_pnl_pct' => $pct($mtdPnl, $costBasis),
         'unrealized_pnl' => (string)$unrealized,
         'unrealized_pnl_pct' => $pct($unrealized, $costBasis),
-        'realized_mtd' => (string)$realizedMtd,
-        'dividend_mtd' => '0',
         'holdings_count' => $holdings,
         'holdings_positive' => $positive,
         'usage_pct' => 0,
@@ -644,81 +670,6 @@ if ($method === 'GET' && $path === '/dashboard/recent') {
     foreach ($rows as &$row) $row['amount'] = ((float)$row['amount'] >= 0 ? '+' : '') . (string)$row['amount'];
     unset($row);
     envelope_ok($rows);
-}
-if ($method === 'GET' && $path === '/dashboard/monthly-pnl') {
-    // 12 month-ends (oldest first) anchored to UTC month boundaries.
-    $tz = new DateTimeZone('UTC');
-    $months = [];
-    $base = new DateTimeImmutable('first day of this month 00:00:00', $tz);
-    $start = $base->modify('-11 months');
-    for ($i = 0; $i < 12; $i++) {
-        $m = $start->modify("+{$i} months");
-        $end = $m->modify('last day of this month');
-        $months[] = [
-            'label' => $m->format('n') . '月',
-            'end_iso' => $end->format('Y-m-d'),
-            'end_sql' => $end->format('Ymd'),
-        ];
-    }
-
-    // Distinct (account_id, security_id) pairs the user has traded.
-    $pairStmt = $pdo->prepare('SELECT DISTINCT account_id, security_id FROM transactions WHERE user_id=? AND security_id IS NOT NULL');
-    $pairStmt->execute([$userId]);
-    $pairs = $pairStmt->fetchAll();
-
-    $priceStmt = $pdo->prepare('SELECT close FROM prices WHERE user_id=? AND security_id=? AND date <= ? ORDER BY date DESC LIMIT 1');
-    $txStmt   = $pdo->prepare('SELECT type, qty, price, fees FROM transactions WHERE user_id=? AND account_id=? AND security_id=? AND txn_date <= ? ORDER BY txn_date, created_at, id');
-
-    $realizedSeries = array_fill(0, 12, 0.0);
-    $unrealizedSeries = array_fill(0, 12, 0.0);
-    $prevRealizedTotal = 0.0;
-
-    foreach ($months as $idx => $m) {
-        $realizedAtM = 0.0;
-        $unrealizedAtM = 0.0;
-        foreach ($pairs as $p) {
-            $accountId = (string)$p['account_id'];
-            $securityId = (string)$p['security_id'];
-            $txStmt->execute([$userId, $accountId, $securityId, $m['end_iso']]);
-            $qty = 0.0;
-            $avg = 0.0;
-            foreach ($txStmt->fetchAll() as $tx) {
-                $type = strtoupper((string)$tx['type']);
-                $q = (float)$tx['qty']; $price = (float)$tx['price']; $fees = (float)$tx['fees'];
-                if ($type === 'BUY') {
-                    $totalCost = $q * $price + $fees;
-                    $denom = $qty + $q;
-                    $avg = $denom > 0 ? ($qty * $avg + $totalCost) / $denom : 0.0;
-                    $qty += $q;
-                } elseif ($type === 'SELL') {
-                    $realizedAtM += ($q * $price - $fees) - ($q * $avg);
-                    $qty -= $q;
-                    if ($qty <= 0) {
-                        $qty = 0.0;
-                        $avg = 0.0;
-                    }
-                }
-            }
-            if ($qty > 0) {
-                $priceStmt->execute([$userId, $securityId, $m['end_sql']]);
-                $close = (float)($priceStmt->fetchColumn() ?: 0);
-                if ($close > 0) {
-                    $unrealizedAtM += $qty * ($close - $avg);
-                }
-            }
-        }
-        // Per-month realized = realized events during this month.
-        $realizedSeries[$idx] = round($realizedAtM - $prevRealizedTotal, 2);
-        // Unrealized = mark-to-market snapshot at month-end.
-        $unrealizedSeries[$idx] = round($unrealizedAtM, 2);
-        $prevRealizedTotal = $realizedAtM;
-    }
-
-    envelope_ok([
-        'labels' => array_column($months, 'label'),
-        'realized' => array_map(static fn (float $v): string => (string)$v, $realizedSeries),
-        'unrealized' => array_map(static fn (float $v): string => (string)$v, $unrealizedSeries),
-    ]);
 }
 if ($method === 'GET' && $path === '/reports/realized') {
     $from = $_GET['from'] ?? null;
@@ -928,34 +879,25 @@ if ($method === 'GET' && $path === '/settings/quotes') {
 if ($method === 'POST' && $path === '/settings/quotes') {
     $provider = (string)($input['provider'] ?? 'twse_mis');
     if (!in_array($provider, ['twse_mis', 'manual'], true)) envelope_error('VALIDATION_ERROR', 'Unsupported quote provider.', 422);
-    $interval = (int)($input['interval_minutes'] ?? 15);
+    $interval = (int)($input['interval_minutes'] ?? app_setting($pdo, 'quotes.interval_minutes', '15'));
     if ($interval < 1 || $interval > 1440) envelope_error('VALIDATION_ERROR', 'Interval must be between 1 and 1440 minutes.', 422);
+    $enabled = array_key_exists('enabled', $input)
+        ? !empty($input['enabled'])
+        : app_setting($pdo, 'quotes.enabled', '1') === '1';
     save_app_setting($pdo, 'quotes.provider', $provider);
-    save_app_setting($pdo, 'quotes.enabled', !empty($input['enabled']) ? '1' : '0');
+    save_app_setting($pdo, 'quotes.enabled', $enabled ? '1' : '0');
     save_app_setting($pdo, 'quotes.interval_minutes', (string)$interval);
-    envelope_ok(['provider' => $provider, 'enabled' => !empty($input['enabled']), 'interval_minutes' => $interval]);
+    envelope_ok(['provider' => $provider, 'enabled' => $enabled, 'interval_minutes' => $interval]);
 }
 if ($method === 'GET' && $path === '/skills') envelope_ok([]);
 if ($method === 'POST' && preg_match('#^/skills/[^/]+/(run|toggle)$#', $path)) envelope_error('NOT_IMPLEMENTED', 'Skill execution is not enabled in Apache-only runtime.', 501);
 if ($method === 'GET' && ($path === '/prices/last-update' || $path === '/maintenance/last-price-update')) { $stmt = $pdo->prepare('SELECT MAX(created_at) FROM prices WHERE user_id=?'); $stmt->execute([$userId]); envelope_ok(['as_of' => $stmt->fetchColumn() ?: null]); }
-if ($method === 'POST' && $path === '/maintenance/backup') {
-    $backupDir = runtime_dir() . DIRECTORY_SEPARATOR . 'backup';
-    if (!is_dir($backupDir)) mkdir($backupDir, 0770, true);
-    $target = $backupDir . DIRECTORY_SEPARATOR . 'stock_hold_' . gmdate('Ymd_His') . '.sqlite';
-    copy(runtime_dir() . DIRECTORY_SEPARATOR . 'stock_hold.sqlite', $target);
-    envelope_ok(['backup_file' => basename($target)]);
-}
-if ($method === 'POST' && $path === '/maintenance/restore') {
-    require_fields($input, ['backup_file', 'confirm']);
-    if ($input['confirm'] !== true) envelope_error('VALIDATION_ERROR', 'Restore requires confirm=true.', 422);
-    $name = basename((string)$input['backup_file']);
-    if (!preg_match('/^stock_hold_[0-9]{8}_[0-9]{6}\.sqlite$/', $name)) envelope_error('VALIDATION_ERROR', 'Invalid backup file name.', 422);
-    $source = runtime_dir() . DIRECTORY_SEPARATOR . 'backup' . DIRECTORY_SEPARATOR . $name;
-    if (!is_file($source)) envelope_error('NOT_FOUND', 'Backup file does not exist.', 404);
-    $current = runtime_dir() . DIRECTORY_SEPARATOR . 'stock_hold.sqlite';
-    $safety = runtime_dir() . DIRECTORY_SEPARATOR . 'backup' . DIRECTORY_SEPARATOR . 'stock_hold_before_restore_' . gmdate('Ymd_His') . '.sqlite';
-    if (!copy($current, $safety) || !copy($source, $current)) envelope_error('RESTORE_FAILED', 'Unable to restore database.', 500);
-    envelope_ok(['restored_file' => $name, 'safety_backup' => basename($safety)]);
+// F-02 fix: backup/restore moved off the HTTP surface.
+// Any authenticated user previously could download the entire SQLite (all users'
+// password hashes + portfolios). The new entry points are cli/backup.php and
+// cli/restore.php, which .htaccess already denies from web access.
+if ($method === 'POST' && ($path === '/maintenance/backup' || $path === '/maintenance/restore')) {
+    envelope_error('GONE', 'Backup and restore have moved to the CLI. Use php cli/backup.php or php cli/restore.php on the server shell.', 410);
 }
 if ($method === 'POST' && $path === '/maintenance/reconcile') envelope_ok(['matched' => true, 'diff' => '0']);
 if ($method === 'POST' && $path === '/prices/batch-update') {

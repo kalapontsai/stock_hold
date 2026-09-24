@@ -177,13 +177,19 @@ function start_session(): void
     session_start();
 }
 
-function public_registration_enabled(PDO $pdo): bool
+function public_registration_enabled(PDO $pdo, ?string $initToken = null): bool
 {
     $configured = env_value('STOCK_HOLD_ALLOW_REGISTRATION');
     if ($configured !== null) {
         return in_array(strtolower($configured), ['1', 'true', 'yes', 'on'], true);
     }
-    return ((int)$pdo->query('SELECT COUNT(*) FROM users')->fetchColumn()) === 0;
+    if ((int)$pdo->query('SELECT COUNT(*) FROM users')->fetchColumn() > 0) {
+        return false;
+    }
+    // F-03 fix: first-user bootstrap requires STOCK_HOLD_INIT_TOKEN.
+    // Without this, an attacker who reaches a fresh deployment first can
+    // claim the admin-equivalent first account.
+    return validate_init_token((string)$initToken);
 }
 
 function current_user(PDO $pdo): ?array
@@ -223,6 +229,18 @@ function require_authenticated_user(PDO $pdo): array
 function require_write_access(PDO $pdo): array
 {
     $user = require_authenticated_user($pdo);
+
+    // F-06 fix: per-user write rate limit. Applied BEFORE the API-token / CSRF
+    // bypass so automation scripts using X-API-Token cannot flood either.
+    if (!check_write_rate_limit($pdo, (int)$user['id'])) {
+        envelope_error('RATE_LIMITED', 'Too many write requests. Please slow down.', 429);
+    }
+
+    // F-07 fix: append-only audit trail. One row per authenticated mutation.
+    $method = (string)($_SERVER['REQUEST_METHOD'] ?? 'UNK');
+    $path = (string)($_SERVER['PATH_INFO'] ?? (parse_url((string)($_SERVER['REQUEST_URI'] ?? ''), PHP_URL_PATH) ?: ''));
+    audit_log_write($pdo, (int)$user['id'], substr("{$method} {$path}", 0, 200));
+
     $expected = env_value('STOCK_HOLD_API_TOKEN');
     $provided = $_SERVER['HTTP_X_API_TOKEN'] ?? '';
     if ($expected !== null && $expected !== '' && $provided !== '' && hash_equals($expected, $provided)) {
@@ -279,6 +297,100 @@ function record_failed_login(PDO $pdo, string $key): void
 function clear_login_limits(PDO $pdo, string $key): void
 {
     $pdo->prepare('DELETE FROM auth_rate_limits WHERE scope_key=?')->execute([$key]);
+}
+
+// F-06 fix: per-user write rate limit (fixed window, configurable via env).
+// Returns true if the write is allowed; false if the user is over the quota.
+// Distinct from auth_rate_limits which tracks failed login attempts.
+function check_write_rate_limit(PDO $pdo, int $userId): bool
+{
+    $maxPerWindow = (int)(env_value('STOCK_HOLD_WRITE_RATE_MAX') ?? '60');
+    $windowSeconds = max(1, (int)(env_value('STOCK_HOLD_WRITE_RATE_WINDOW') ?? '60'));
+    $now = time();
+    $windowStart = $now - ($now % $windowSeconds);
+    $windowStartedAt = gmdate('Y-m-d H:i:s', $windowStart);
+
+    $stmt = $pdo->prepare('SELECT write_count, window_started_at FROM write_rate_limits WHERE user_id=?');
+    $stmt->execute([$userId]);
+    $row = $stmt->fetch();
+
+    if (!$row || $row['window_started_at'] !== $windowStartedAt) {
+        // New window — start fresh with this write as count=1.
+        $upsert = $pdo->prepare(
+            'INSERT INTO write_rate_limits(user_id, window_started_at, write_count) VALUES(?, ?, 1)
+             ON CONFLICT(user_id) DO UPDATE SET window_started_at=excluded.window_started_at, write_count=1'
+        );
+        $upsert->execute([$userId, $windowStartedAt]);
+        return true;
+    }
+
+    if ((int)$row['write_count'] >= $maxPerWindow) {
+        return false;
+    }
+
+    // Same window — increment.
+    $pdo->prepare('UPDATE write_rate_limits SET write_count = write_count + 1 WHERE user_id=?')->execute([$userId]);
+    return true;
+}
+
+// F-03 fix: validate init token for first-user bootstrap.
+function validate_init_token(string $provided): bool
+{
+    $expected = env_value('STOCK_HOLD_INIT_TOKEN');
+    if ($expected === null || $expected === '' || $provided === '') {
+        return false;
+    }
+    return hash_equals($expected, $provided);
+}
+
+// F-03 fix: register rate limit (per IP and per email, sliding window).
+// Distinct from auth_rate_limits (which tracks FAILED login attempts).
+function check_register_rate_limit(PDO $pdo, string $ip, string $email): bool
+{
+    $maxAttempts = max(1, (int)(env_value('STOCK_HOLD_REGISTER_MAX_PER_DAY') ?? '5'));
+    $windowSeconds = max(60, (int)(env_value('STOCK_HOLD_REGISTER_WINDOW') ?? '86400'));
+    $now = time();
+    $windowStart = $now - $windowSeconds;
+    $scopes = [
+        ['ip', rate_limit_key('register-ip', $ip)],
+        ['email', rate_limit_key('register-email', $email)],
+    ];
+    foreach ($scopes as [$scope, $key]) {
+        $stmt = $pdo->prepare('SELECT attempt_count, first_attempt_at FROM register_rate_limits WHERE scope=? AND scope_key=?');
+        $stmt->execute([$scope, $key]);
+        $row = $stmt->fetch();
+
+        if (!$row || strtotime($row['first_attempt_at']) < $windowStart) {
+            // New window — reset.
+            $upsert = $pdo->prepare(
+                'INSERT INTO register_rate_limits(scope, scope_key, first_attempt_at, attempt_count) VALUES(?, ?, ?, 1)
+                 ON CONFLICT(scope, scope_key) DO UPDATE SET first_attempt_at=excluded.first_attempt_at, attempt_count=1'
+            );
+            $upsert->execute([$scope, $key, gmdate('Y-m-d H:i:s', $now)]);
+            continue;
+        }
+
+        if ((int)$row['attempt_count'] >= $maxAttempts) {
+            return false; // Rate limited.
+        }
+
+        $pdo->prepare('UPDATE register_rate_limits SET attempt_count = attempt_count + 1 WHERE scope=? AND scope_key=?')
+            ->execute([$scope, $key]);
+    }
+    return true;
+}
+
+// F-07 fix: append-only audit trail. Called from require_write_access and
+// any handler that wants a finer-grained trail. Failures must NOT break the
+// request — we log to stderr and continue.
+function audit_log_write(PDO $pdo, int $userId, string $action, ?string $ip = null): void
+{
+    try {
+        $stmt = $pdo->prepare('INSERT INTO audit_log(user_id, action, ip, ts) VALUES(?, ?, ?, ?)');
+        $stmt->execute([$userId, $action, $ip ?? client_ip(), now_sql()]);
+    } catch (Throwable $e) {
+        error_log('audit_log_write failed: ' . $e->getMessage());
+    }
 }
 
 function now_sql(): string

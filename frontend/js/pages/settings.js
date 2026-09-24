@@ -173,15 +173,6 @@ export async function mountSettings(root) {
         <option value="manual">手動匯入</option>
       </select>
     </div>
-    <div class="form-field">
-      <label class="form-field__label" for="quote-interval">更新間隔（分鐘）</label>
-      <input class="input input--number" id="quote-interval" type="number" min="1" max="1440" step="1" value="${escapeHtml(quoteSettings.interval_minutes)}">
-      <span class="form-field__hint">供排程更新使用；也可按「立即更新」即時抓取。</span>
-    </div>
-    <label class="form-field" style="display:flex; gap:var(--space-2); align-items:center;">
-      <input type="checkbox" id="quote-enabled" ${quoteSettings.enabled ? "checked" : ""}>
-      <span class="form-field__label" style="margin:0;">啟用報價更新</span>
-    </label>
     <div style="display:flex; gap:var(--space-3); align-items:center; flex-wrap:wrap;">
       <button type="button" class="btn btn--primary" data-action="save-quotes">儲存設定</button>
       <button type="button" class="btn btn--secondary" data-action="refresh-quotes">立即更新全部持股</button>
@@ -191,11 +182,8 @@ export async function mountSettings(root) {
   quoteSection.querySelector("#quote-provider").value = quoteSettings.provider;
   quoteSection.querySelector("[data-action=save-quotes]").addEventListener("click", async () => {
     try {
-      const value = Number(quoteSection.querySelector("#quote-interval").value);
       await api.quoteSettings.update({
         provider: quoteSection.querySelector("#quote-provider").value,
-        enabled: quoteSection.querySelector("#quote-enabled").checked,
-        interval_minutes: value,
       });
       toast("報價設定已儲存", { tone: "success" });
     } catch (e) { toast(e.message, { tone: "error" }); }
@@ -280,32 +268,20 @@ export async function mountSettings(root) {
   sections.appendChild(reconcileSection);
 
   // ───────── 8. Maintenance ─────────
+  // F-02 fix: backup/restore moved off the HTTP surface. Buttons removed;
+  // operators now run cli/backup.php / cli/restore.php on the server.
   const maintenanceSection = section(t("set.sec.maintenance"), "maintenance");
   maintenanceSection.querySelector("[data-host]").innerHTML = `
     <div style="display:flex; flex-wrap: wrap; gap: var(--space-3);">
-      <button type="button" class="btn btn--secondary" data-action="backup">${t("action.backup")}</button>
-      <button type="button" class="btn btn--secondary" data-action="restore">${t("action.restore")}</button>
       <button type="button" class="btn btn--secondary" data-action="health">${t("action.healthCheck")}</button>
       <button type="button" class="btn btn--secondary" data-action="update">${t("action.checkUpdate")}</button>
     </div>
+    <p style="margin-top: var(--space-3); color: var(--text-muted); font-size: 0.9em;">
+      備份與還原已移至伺服器端 CLI：<br>
+      <code>php cli/backup.php</code> → 輸出備份檔名（位於 <code>runtime/backup/</code>）<br>
+      <code>php cli/restore.php --file=<name> --confirm</code> → 還原指定備份
+    </p>
   `;
-  maintenanceSection.querySelector("[data-action=backup]").addEventListener("click", async () => {
-    try { const result = await api.maintenance.backup(); toast(`備份完成：${result.backup_file}`, { tone: "success" }); }
-    catch (e) { toast(e.message, { tone: "error" }); }
-  });
-  maintenanceSection.querySelector("[data-action=restore]").addEventListener("click", async () => {
-    const ok = await confirmDialog({
-      title: t("action.restore"),
-      body: "從備份還原會覆蓋現有資料。請先確認已備份最新狀態。",
-      confirmLabel: t("action.confirm"),
-      confirmTone: "danger",
-    });
-    if (!ok) return;
-    const backupFile = window.prompt("請輸入 runtime/backup 內的備份檔名：");
-    if (!backupFile) return;
-    try { await api.maintenance.restore({ backup_file: backupFile, confirm: true }); toast("還原完成，請重新整理頁面。", { tone: "success" }); }
-    catch (e) { toast(e.message, { tone: "error" }); }
-  });
   maintenanceSection.querySelector("[data-action=health]").addEventListener("click", async () => {
     try { await api.rawRequest("GET", "/health"); toast("健康檢查通過", { tone: "success" }); }
     catch (e) { toast(e.message, { tone: "error" }); }

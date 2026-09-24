@@ -8,12 +8,8 @@ export async function summary() {
     total_assets_prev:  "2297800",
     today_pnl:          "12450",
     today_pnl_pct:      "0.53",
-    mtd_pnl:            "88200",
-    mtd_pnl_pct:        "3.9",
     unrealized_pnl:     "156300",
     unrealized_pnl_pct: "7.1",
-    realized_mtd:       "3200",
-    dividend_mtd:       "1800",
     holdings_count:     7,
     holdings_positive:  5,
     usage_pct:          75,
@@ -43,12 +39,4 @@ export async function recent({ query } = {}) {
     { id: "tx-0008", txn_date: "2026-09-10", type: "BUY",      symbol: "AAPL",   qty: "20",   price: "175.00", amount: "-111000", currency: "TWD" },
   ];
   return rows.slice(0, limit);
-}
-
-export async function monthlyPnl() {
-  return {
-    labels: ["10月","11月","12月","1月","2月","3月","4月","5月","6月","7月","8月","9月"],
-    realized:   ["15000","22000","8000","12000","-5000","18000","25000","20000","16000","28000","32000","33000"],
-    unrealized: ["10000","15000","12000","18000","22000","-8000","10000","12000","15000","18000","22000","28000"],
-  };
 }

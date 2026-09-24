@@ -97,7 +97,6 @@ const MOCK_TABLE = {
   "GET /dashboard/summary":  mockDashboard.summary,
   "GET /dashboard/allocation": mockDashboard.allocation,
   "GET /dashboard/recent":   mockDashboard.recent,
-  "GET /dashboard/monthly-pnl": mockDashboard.monthlyPnl,
   "GET /reports/realized":   mockReports.realized,
   "GET /reports/unrealized": mockHoldings.listHoldings,
   "GET /reports/dividends":  mockReports.dividends,
@@ -296,7 +295,6 @@ export const dashboard = {
   summary:       () => request("GET", "/dashboard/summary"),
   allocation:    () => request("GET", "/dashboard/allocation"),
   recent:        () => request("GET", "/dashboard/recent", null, { query: { limit: 5 } }),
-  monthlyPnl:    () => request("GET", "/dashboard/monthly-pnl"),
 };
 
 /* Reports */
@@ -308,12 +306,12 @@ export const reports = {
 };
 
 /* Maintenance */
+// F-02 fix: backup/restore removed from the HTTP API. Use the CLI tools
+// (cli/backup.php, cli/restore.php) from the server shell instead.
 export const maintenance = {
   reconcile:   (body) => request("POST", "/maintenance/reconcile", body),
   lastPriceUpdate: () => request("GET", "/prices/last-update"),
   refreshPrices:   (body) => request("POST", "/prices/batch-update", body),
-  backup:      () => request("POST", "/maintenance/backup"),
-  restore:     (body) => request("POST", "/maintenance/restore", body),
 };
 
 /* Quote settings */

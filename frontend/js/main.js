@@ -73,9 +73,6 @@ function buildShell() {
         <button type="button" class="btn btn--ghost btn--icon-only btn--sm" data-action="theme" aria-label="主題切換" title="主題切換">
           <span aria-hidden="true">🌓</span>
         </button>
-        <button type="button" class="btn btn--secondary btn--sm" data-action="refresh">
-          <span aria-hidden="true">↻</span> ${t("action.refresh")}
-        </button>
         <span class="header__user" data-user-name hidden></span>
         <button type="button" class="btn btn--ghost btn--sm" data-action="logout" hidden>登出</button>
       </div>
@@ -88,15 +85,6 @@ function buildShell() {
     const next = cur === "dark" ? "light" : "dark";
     document.documentElement.setAttribute("data-theme", next);
     try { localStorage.setItem("stock_hold.theme", next); } catch (_) {}
-  });
-
-  // Global refresh (delegates to page's own refresh when present)
-  header.querySelector("[data-action=refresh]").addEventListener("click", () => {
-    // Dispatch to page-specific button if it exists, else default to a toast.
-    const pageRefresh = document.querySelector("[data-page-action=refresh], main [data-action=refresh]");
-    if (pageRefresh) pageRefresh.click();
-    else import("./components/modal.js").then(({ toast }) =>
-      toast(t("action.refreshDone"), { tone: "success" }));
   });
 
   header.querySelector("[data-action=logout]").addEventListener("click", async () => {

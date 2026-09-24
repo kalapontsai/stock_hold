@@ -1,8 +1,8 @@
 /**
  * stock_hold — Dashboard page
  *
- * Wireframe §1: 4 metric cards + allocation chart + recent 5 transactions
- * + monthly P/L bar chart. Mobile-first; data-attr hooks for chart toggle.
+ * Wireframe §1: 3 metric cards + allocation chart + recent 5 transactions.
+ * Mobile-first; data-attr hooks for chart toggle.
  */
 
 import * as api from "../api-client.js";
@@ -41,17 +41,6 @@ export async function mountDashboard(root) {
   middleRow.className = "grid grid--dashboard-bottom section";
   root.appendChild(middleRow);
 
-  const monthlyWrap = document.createElement("div");
-  monthlyWrap.className = "card section";
-  monthlyWrap.innerHTML = `<div class="card__header">
-    <h2 class="card__title">${t("dashboard.monthlyPnl")}</h2>
-    <div class="legend" style="font-size: var(--text-xs); color: var(--color-text-muted);">
-      <span class="badge badge--info" style="margin-right: var(--space-2);">${t("dashboard.realized")}</span>
-      <span class="badge badge--neutral">${t("dashboard.unrealized")}</span>
-    </div>
-  </div><div data-monthly-chart></div>`;
-  root.appendChild(monthlyWrap);
-
   const refreshBtn = header.querySelector("[data-action=refresh]");
   const asOfEl = header.querySelector("[data-as-of]");
 
@@ -70,13 +59,12 @@ export async function mountDashboard(root) {
   });
 
   // --- Load all dashboard data in parallel ---
-  let summary, allocation, recent, monthly, lastUpdate;
+  let summary, allocation, recent, lastUpdate;
   try {
-    [summary, allocation, recent, monthly, lastUpdate] = await Promise.all([
+    [summary, allocation, recent, lastUpdate] = await Promise.all([
       api.dashboard.summary(),
       api.dashboard.allocation(),
       api.dashboard.recent({ limit: 5 }),
-      api.dashboard.monthlyPnl(),
       api.maintenance.lastPriceUpdate(),
     ]);
   } catch (e) {
@@ -88,7 +76,7 @@ export async function mountDashboard(root) {
     asOfEl.textContent = t("metric.dataAsOf", { ts: formatDateTime(lastUpdate.as_of) });
   }
 
-  // --- 4 metric cards ---
+  // --- 3 metric cards ---
   const totalAssetsDelta = summary.total_assets_prev
     ? delta(summary.total_assets, summary.total_assets_prev)
     : null;
@@ -109,16 +97,6 @@ export async function mountDashboard(root) {
     },
     period: t("metric.usageProgress", { pct: summary.usage_pct }),
     semantic: Number(summary.today_pnl) >= 0 ? "positive" : "negative",
-  }));
-  metricsRow.appendChild(createMetricCard({
-    label: t("metric.mtdPnl"),
-    value: formatMoney(summary.mtd_pnl, "TWD", { signed: true }),
-    delta: {
-      value: formatPercent(summary.mtd_pnl_pct),
-      direction: Number(summary.mtd_pnl) >= 0 ? "up" : "down",
-    },
-    period: `${t("dashboard.realized")} +${formatMoney(summary.realized_mtd, "TWD", { signed: false })}`,
-    semantic: Number(summary.mtd_pnl) >= 0 ? "positive" : "negative",
   }));
   metricsRow.appendChild(createMetricCard({
     label: t("metric.unrealizedPnl"),
@@ -215,20 +193,6 @@ export async function mountDashboard(root) {
     recentHost.appendChild(row);
   });
 
-  // --- Monthly P/L ---
-  const monthlyHost = monthlyWrap.querySelector("[data-monthly-chart]");
-  const monthlyChart = await createBarChart({
-    labels: monthly.labels,
-    datasets: [
-      { label: t("dashboard.realized"),   values: monthly.realized.map(Number),   color: "var(--chart-1)" },
-      { label: t("dashboard.unrealized"), values: monthly.unrealized.map(Number), color: "var(--chart-2)" },
-    ],
-    stacked: true,
-    title: t("dashboard.monthlyPnl"),
-    height: 280,
-    yFormatter: (v) => formatMoney(String(v), "TWD", { signed: true }),
-  });
-  monthlyHost.appendChild(monthlyChart.el);
 }
 
 function pageHref(page) {
