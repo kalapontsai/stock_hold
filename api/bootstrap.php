@@ -401,7 +401,9 @@ function audit_log_write(PDO $pdo, int $userId, string $action, ?string $ip = nu
         $stmt = $pdo->prepare('INSERT INTO audit_log(user_id, action, ip, ts) VALUES(?, ?, ?, ?)');
         $stmt->execute([$userId, $action, $ip ?? client_ip(), now_sql()]);
     } catch (Throwable $e) {
-        error_log('audit_log_write failed: ' . $e->getMessage());
+        // F-11 fix: class only, no message (PDOException message can leak
+        // bound values and table structure into the error log).
+        error_log('audit_log_write failed: ' . get_class($e));
     }
 }
 

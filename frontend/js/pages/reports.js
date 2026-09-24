@@ -212,8 +212,8 @@ export async function mountReports(root) {
     const tbl = createDataTable({
       columns: [
         { key: "symbol", header: "標的" },
-        { key: "ex_date", header: t("rpt.col.exDate"), cell: (r) => `<span class="num">${formatDate(r.ex_date)}</span>` },
-        { key: "pay_date", header: t("rpt.col.payDate"), cell: (r) => `<span class="num">${formatDate(r.pay_date)}</span>` },
+        { key: "ex_date", header: t("rpt.col.exDate"), cell: (r) => `<span class="num">${escapeHtml(formatDate(r.ex_date))}</span>` },
+        { key: "pay_date", header: t("rpt.col.payDate"), cell: (r) => `<span class="num">${escapeHtml(formatDate(r.pay_date))}</span>` },
         { key: "per_share", header: t("rpt.col.perShare"), numeric: true, align: "right",
           cell: (r) => `<span class="num">${formatMoney(r.per_share, r.currency)}</span>` },
         { key: "amount_twd", header: t("rpt.col.total"), numeric: true, align: "right",

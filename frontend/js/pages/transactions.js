@@ -126,7 +126,7 @@ export async function mountTransactions(root) {
       columns: [
         {
           key: "txn_date", header: t("txn.col.date"), sortable: true, width: "110px",
-          cell: (row) => `<span class="num">${formatDate(row.txn_date)}</span>`,
+          cell: (row) => `<span class="num">${escapeHtml(formatDate(row.txn_date))}</span>`,
         },
         {
           key: "account_id", header: t("txn.col.account"),

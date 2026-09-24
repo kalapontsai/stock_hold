@@ -6,7 +6,15 @@ require_once __DIR__ . '/bootstrap.php';
 security_headers();
 
 set_exception_handler(static function (Throwable $e): never {
-    error_log(json_encode(['event' => 'stock_hold_api_error', 'type' => get_class($e), 'message' => $e->getMessage()]));
+    // F-11 fix: do NOT log $e->getMessage(). PDOException messages include
+    // bound SQL parameters and table names → schema/values leak. Log only
+    // the exception class + a correlation token (request_id) so operators
+    // can grep for a specific incident without exposing internals.
+    error_log(json_encode([
+        'event' => 'stock_hold_api_error',
+        'type' => get_class($e),
+        'request_id' => request_id(),
+    ]));
     envelope_error('INTERNAL_ERROR', 'Internal server error.', 500);
 });
 
