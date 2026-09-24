@@ -143,17 +143,36 @@ export async function mountHoldings(root) {
         },
         {
           key: "price", header: t("hold.col.price"), numeric: true, align: "right",
-          cell: (row) => `<span class="num">${formatMoney(row.current_price, row.currency)}</span>
-            <div style="font-size: var(--text-xs); color: var(--color-text-muted);">${formatDate(row.price_date)}</div>`,
+          cell: (row) => {
+            const curr = Number(row.current_price);
+            const prev = Number(row.prev_close);
+            const pctCell = (Number.isFinite(curr) && Number.isFinite(prev) && prev > 0)
+              ? (() => {
+                  const pct = ((curr - prev) / prev) * 100;
+                  const cls = pct >= 0 ? "value-positive" : "value-negative";
+                  const arrow = pct >= 0 ? " ▲" : " ▼";
+                  return `<span class="${cls}" style="font-size: var(--text-xs);">${formatPercent(pct.toFixed(2))}${arrow}</span>`;
+                })()
+              : "—";
+            return `<span class="num">${formatMoney(row.current_price, row.currency)}</span>
+              <div style="font-size: var(--text-xs);">${pctCell}</div>
+              <div style="font-size: var(--text-xs); color: var(--color-text-muted);">${formatDate(row.price_date)}</div>`;
+          },
         },
         {
           key: "marketValue", header: t("hold.col.marketValue"), numeric: true, align: "right",
-          cell: (row) => formatDualCurrency({
-            originalValue: String(Number(row.current_price) * Number(row.qty)),
-            originalCurrency: row.currency,
-            twdValue: String(Math.round(Number(row.current_price) * Number(row.qty) * Number(row.fx_rate))),
-            field: "money",
-          }),
+          cell: (row) => {
+            const fx = Number(row.fx_rate || 1);
+            const orig = Number(row.current_price) * Number(row.qty);
+            const twd = orig * fx;
+            if (!Number.isFinite(orig) || orig <= 0) return "—";
+            return formatDualCurrency({
+              originalValue: String(Math.max(0, orig)),
+              originalCurrency: row.currency,
+              twdValue: String(Math.max(0, Math.round(twd))),
+              field: "money",
+            });
+          },
         },
         {
           key: "unrealizedPnl", header: t("hold.col.unrealizedPnl"), numeric: true, align: "right",

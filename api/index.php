@@ -520,16 +520,19 @@ if ($method === 'POST' && $path === '/transactions/batch-delete') {
 
 if ($method === 'GET' && $path === '/holdings') {
     $ttmSince = (new DateTimeImmutable('-1 year', new DateTimeZone('UTC')))->format('Y-m-d');
+    $todaySql = gmdate('Ymd');
     $sql = 'SELECT p.*,s.symbol,s.name,s.currency,a.name AS account_name,'
         . 'COALESCE((SELECT close FROM prices pr WHERE pr.security_id=p.security_id AND pr.user_id=p.user_id ORDER BY pr.date DESC LIMIT 1), 0) AS current_price,'
-        . 'COALESCE((SELECT SUM(amount_per_share) FROM dividends d WHERE d.security_id=p.security_id AND d.user_id=p.user_id AND d.pay_date >= ?), 0) AS ttm_per_share,'
-        . 'p.realized_pl AS position_realized_pl '
+        . 'COALESCE((SELECT date FROM prices pd WHERE pd.security_id=p.security_id AND pd.user_id=p.user_id ORDER BY pd.date DESC LIMIT 1), "") AS price_date,'
+        . 'COALESCE((SELECT close FROM prices pr WHERE pr.security_id=p.security_id AND pr.user_id=p.user_id AND pr.date < ? ORDER BY pr.date DESC LIMIT 1), 0) AS prev_close,'
+        . 'COALESCE((SELECT date FROM prices pd WHERE pd.security_id=p.security_id AND pd.user_id=p.user_id AND pd.date < ? ORDER BY pd.date DESC LIMIT 1), "") AS prev_date,'
+        . 'COALESCE((SELECT SUM(amount_per_share) FROM dividends d WHERE d.security_id=p.security_id AND d.user_id=p.user_id AND d.pay_date >= ?), 0) AS ttm_per_share '
         . 'FROM positions p '
         . 'JOIN securities s ON s.id=p.security_id AND s.user_id=p.user_id '
         . 'JOIN accounts a ON a.id=p.account_id AND a.user_id=p.user_id '
         . 'WHERE p.qty > 0 AND p.user_id=? ORDER BY s.symbol,a.name';
     $stmt = $pdo->prepare($sql);
-    $stmt->execute([$ttmSince, $userId]);
+    $stmt->execute([$todaySql, $todaySql, $ttmSince, $userId]);
     envelope_ok(list_data($stmt->fetchAll()));
 }
 if ($method === 'GET' && $path === '/dividends') {
