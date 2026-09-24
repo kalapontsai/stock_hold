@@ -45,6 +45,20 @@ let csrfToken = null;
 function getBaseUrl() {
   if (typeof window === "undefined") return DEFAULT_BASE;
   if (window.STOCK_HOLD_API_BASE) return window.STOCK_HOLD_API_BASE;
+  // Auto-detect: API and frontend share the same app root. Walk our own
+  // import.meta.url to locate /frontend/ and strip it, so the same bundle
+  // works whether stock_hold is mounted at the domain root or under a
+  // sub-path (e.g. /stock_hold/). Detection runs once at module load.
+  //   /frontend/js/api-client.js             → "/api/v1"
+  //   /stock_hold/frontend/js/api-client.js  → "/stock_hold/api/v1"
+  try {
+    const here = import.meta.url;
+    if (here) {
+      const u = new URL(here);
+      const m = u.pathname.match(/^(.*?)\/frontend\//);
+      if (m) return (m[1] || "") + "/api/v1";
+    }
+  } catch (_) { /* fall through to DEFAULT_BASE */ }
   return DEFAULT_BASE;
 }
 
