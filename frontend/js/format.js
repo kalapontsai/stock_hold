@@ -251,7 +251,12 @@ export function formatPercent(value, opts = {}) {
 export function formatDateTime(input, opts = {}) {
   const { dateOnly = false, placeholder = "—" } = opts;
   if (!input) return placeholder;
-  const d = new Date(input);
+  const raw = String(input).trim();
+  // API timestamps from now_sql() are UTC SQL strings without an offset.
+  // Mark them explicitly as UTC before formatting in the Taipei timezone.
+  const utcSqlTimestamp = /^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)$/;
+  const normalized = utcSqlTimestamp.test(raw) ? `${raw.replace(" ", "T")}Z` : raw;
+  const d = new Date(normalized);
   if (Number.isNaN(d.getTime())) return placeholder;
   const fmt = new Intl.DateTimeFormat("zh-TW", {
     timeZone: "Asia/Taipei",

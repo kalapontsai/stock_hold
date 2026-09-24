@@ -605,21 +605,16 @@ function typeBadgeClass(type) {
   return "badge--neutral";
 }
 function computeAmount(row) {
-  if (row.type === "DEPOSIT" || row.type === "DIVIDEND") {
-    return "+" + formatMoney(String(Number(row.qty || 0) * Number(row.price || 0)), "TWD", { decimals: 0 }).replace(/^NT\$ /, "");
-  }
-  if (row.type === "WITHDRAW" || row.type === "FEE") {
-    return "-" + formatMoney(row.fees || row.price || "0", "TWD", { decimals: 0 }).replace(/^NT\$ /, "");
-  }
-  if (row.type === "BUY") {
-    return "-" + formatMoney(String(Number(row.qty) * Number(row.price)), "TWD", { decimals: 0 }).replace(/^NT\$ /, "");
-  }
-  if (row.type === "RIGHTS") {
-    return "-" + formatMoney(String(Number(row.qty) * Number(row.price)), "TWD", { decimals: 0 }).replace(/^NT\$ /, "");
-  }
-  if (row.type === "SELL") {
-    return "+" + formatMoney(String(Number(row.qty) * Number(row.price)), "TWD", { decimals: 0 }).replace(/^NT\$ /, "");
-  }
+  const signed = (value, positive) => {
+    const amount = Math.abs(Number(value || 0));
+    const prefix = amount === 0 ? "" : (positive ? "+" : "-");
+    return prefix + formatMoney(String(amount), "TWD", { decimals: 0 }).replace(/^NT\$ /, "");
+  };
+  if (row.type === "DEPOSIT" || row.type === "TRANSFER_IN") return signed(row.amount, true);
+  if (row.type === "WITHDRAW" || row.type === "TRANSFER_OUT" || row.type === "FEE") return signed(row.amount, false);
+  if (row.type === "DIVIDEND") return signed(Number(row.qty || 0) * Number(row.price || 0), true);
+  if (row.type === "BUY" || row.type === "RIGHTS") return signed(Number(row.qty || 0) * Number(row.price || 0), false);
+  if (row.type === "SELL") return signed(Number(row.qty || 0) * Number(row.price || 0), true);
   return "—";
 }
 function escapeHtml(s) {

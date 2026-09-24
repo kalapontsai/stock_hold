@@ -30,11 +30,12 @@ export async function mountSettings(root) {
   nav.className = "settings-anchor";
   nav.setAttribute("aria-label", "設定分區");
   nav.innerHTML = `
+    <a class="settings-anchor__link" href="#user">使用者</a>
     <a class="settings-anchor__link" href="#accounts">${t("set.anchor.accounts")}</a>
     <a class="settings-anchor__link" href="#securities">${t("set.anchor.securities")}</a>
     <a class="settings-anchor__link" href="#skills">${t("set.anchor.skills")}</a>
     <a class="settings-anchor__link" href="#token">${t("set.anchor.token")}</a>
-    <a class="settings-anchor__link" href="#quotes">報價更新</a>
+    <a class="settings-anchor__link" href="#quotes">${t("set.anchor.quotes")}</a>
     <a class="settings-anchor__link" href="#appearance">${t("set.anchor.appearance")}</a>
     <a class="settings-anchor__link" href="#reconcile">${t("set.anchor.reconcile")}</a>
     <a class="settings-anchor__link" href="#maintenance">${t("set.anchor.maintenance")}</a>
@@ -45,12 +46,62 @@ export async function mountSettings(root) {
   layout.appendChild(sections);
 
   // Load
-  const [accounts, securities, skills, quoteSettings] = await Promise.all([
+  const [user, accounts, securities, skills, quoteSettings] = await Promise.all([
+    api.auth.me(),
     api.accounts.list().catch(() => []),
     api.securities.list().catch(() => []),
     api.skills.list().catch(() => []),
     api.quoteSettings.get().catch(() => ({ provider: "twse_mis", enabled: true, interval_minutes: 15, last_updated: null })),
   ]);
+
+  // ───────── 0. 使用者 ─────────
+  const userSection = section("使用者", "user");
+  userSection.querySelector("[data-host]").innerHTML = `
+    <form data-user-profile-form style="max-width: 560px;">
+      <div class="form-field">
+        <label class="form-field__label" for="profile-username">帳號</label>
+        <input class="input" id="profile-username" name="username" autocomplete="username" required value="${escapeHtml(user.username)}">
+      </div>
+      <div class="form-field">
+        <label class="form-field__label" for="profile-email">Email</label>
+        <input class="input" id="profile-email" name="email" type="email" autocomplete="email" required value="${escapeHtml(user.email)}">
+      </div>
+      <hr>
+      <p class="form-field__hint">若要修改密碼，請填寫目前密碼與新密碼；只更新帳號或 Email 時可留白。</p>
+      <div class="form-field">
+        <label class="form-field__label" for="profile-current-password">目前密碼</label>
+        <input class="input" id="profile-current-password" name="current_password" type="password" autocomplete="current-password">
+      </div>
+      <div class="form-field">
+        <label class="form-field__label" for="profile-new-password">新密碼</label>
+        <input class="input" id="profile-new-password" name="new_password" type="password" autocomplete="new-password" minlength="4">
+      </div>
+      <div class="form-field">
+        <label class="form-field__label" for="profile-confirm-password">確認新密碼</label>
+        <input class="input" id="profile-confirm-password" name="confirm_password" type="password" autocomplete="new-password" minlength="4">
+      </div>
+      <button class="btn btn--primary" type="submit">儲存使用者資料</button>
+    </form>
+  `;
+  userSection.querySelector("[data-user-profile-form]").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = Object.fromEntries(new FormData(form).entries());
+    if (data.new_password !== data.confirm_password) {
+      toast("兩次新密碼不一致。", { tone: "error" });
+      return;
+    }
+    try {
+      await api.auth.updateProfile(data);
+      form.querySelector("[name=current_password]").value = "";
+      form.querySelector("[name=new_password]").value = "";
+      form.querySelector("[name=confirm_password]").value = "";
+      toast("使用者資料已儲存。", { tone: "success" });
+    } catch (e) {
+      toast(e.message || "使用者資料儲存失敗。", { tone: "error" });
+    }
+  });
+  sections.appendChild(userSection);
 
   // ───────── 1. 帳戶 ─────────
   const accountsSection = section(t("set.sec.accounts"), "accounts", true);
