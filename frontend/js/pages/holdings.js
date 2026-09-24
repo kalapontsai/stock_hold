@@ -8,7 +8,7 @@
 
 import * as api from "../api-client.js";
 import { t } from "../i18n.js";
-import { formatMoney, formatQty, formatPercent, formatDualCurrency, formatDate } from "../format.js";
+import { formatMoney, formatQty, formatPercent, formatDate } from "../format.js";
 import { createDataTable } from "../components/data-table.js";
 import { escapeHtml } from "../utils/escape-html.js";
 
@@ -146,9 +146,11 @@ export async function mountHoldings(root) {
           cell: (row) => {
             const curr = Number(row.current_price);
             const prev = Number(row.prev_close);
-            const pctCell = (Number.isFinite(curr) && Number.isFinite(prev) && prev > 0)
+            const pctCell = (Number.isFinite(curr) && Number.isFinite(prev) && curr > 0 && prev > 0)
               ? (() => {
-                  const pct = ((curr - prev) / prev) * 100;
+                  // Numerator stays as today's move; denominator is the
+                  // current price ("of every dollar I hold, this much moved").
+                  const pct = ((curr - prev) / curr) * 100;
                   const cls = pct >= 0 ? "value-positive" : "value-negative";
                   const arrow = pct >= 0 ? " ▲" : " ▼";
                   return `<span class="${cls}" style="font-size: var(--text-xs);">${formatPercent(pct.toFixed(2))}${arrow}</span>`;
@@ -163,15 +165,9 @@ export async function mountHoldings(root) {
           key: "marketValue", header: t("hold.col.marketValue"), numeric: true, align: "right",
           cell: (row) => {
             const fx = Number(row.fx_rate || 1);
-            const orig = Number(row.current_price) * Number(row.qty);
-            const twd = orig * fx;
-            if (!Number.isFinite(orig) || orig <= 0) return "—";
-            return formatDualCurrency({
-              originalValue: String(Math.max(0, orig)),
-              originalCurrency: row.currency,
-              twdValue: String(Math.max(0, Math.round(twd))),
-              field: "money",
-            });
+            const twd = Number(row.current_price) * Number(row.qty) * fx;
+            if (!Number.isFinite(twd) || twd <= 0) return "—";
+            return `<span class="num">${formatMoney(String(Math.round(Math.max(0, twd))), "TWD", { decimals: 0 })}</span>`;
           },
         },
         {
@@ -188,13 +184,6 @@ export async function mountHoldings(root) {
               <div class="${cls} num">${formatMoney(String(Math.round(twd)), "TWD", { signed: true })}${arrow}</div>
               <div style="font-size: var(--text-xs); color: var(--color-text-muted);">${formatPercent(String(pct.toFixed(2)))}</div>
             `;
-          },
-        },
-        {
-          key: "yield", header: t("hold.col.yield"), numeric: true, align: "right", width: "80px",
-          cell: (row) => {
-            const y = yieldPercent(row);
-            return y !== null ? `<span class="num">${formatPercent(y.toFixed(2))}</span>` : "—";
           },
         },
       ],
@@ -225,14 +214,6 @@ function changePct(row) {
   const cls = pct >= 0 ? "value-positive" : "value-negative";
   const arrow = pct >= 0 ? " ▲" : " ▼";
   return `<span class="${cls}" style="font-size: var(--text-xs);">${formatPercent(String(pct.toFixed(2)))}${arrow}</span>`;
-}
-
-function yieldPercent(row) {
-  const ttm = Number(row.ttm_per_share);
-  const price = Number(row.current_price);
-  if (!Number.isFinite(ttm) || ttm <= 0) return null;
-  if (!Number.isFinite(price) || price <= 0) return null;
-  return (ttm / price) * 100;
 }
 
 function nameOf(list, id) { return list.find(x => x.id === id)?.name ?? "—"; }
