@@ -17,7 +17,6 @@ const TABS = [
   { key: "realized",    label: "rpt.tab.realized" },
   { key: "unrealized",  label: "rpt.tab.unrealized" },
   { key: "dividend",    label: "rpt.tab.dividend" },
-  { key: "tax",         label: "rpt.tab.tax" },
 ];
 
 export async function mountReports(root) {
@@ -140,11 +139,13 @@ export async function mountReports(root) {
     const cards = document.createElement("div");
     cards.className = "grid grid--metrics section";
     cards.appendChild(metricCard(t("metric.realizedPnl"), formatMoney(sum.total_realized, "TWD", { signed: true }),
-      { value: formatPercent("8.7"), direction: "up" }, "positive"));
+      { value: sum.total_trades > 0 ? `${sum.total_trades} 筆` : "—", direction: "flat" },
+      Number(sum.total_realized) >= 0 ? "positive" : "negative"));
     cards.appendChild(metricCard(t("metric.winningRate"), `${sum.winning_rate_pct}% (${sum.wins}/${sum.total_trades})`));
     cards.appendChild(metricCard(t("metric.avgHoldingDays"), `${sum.avg_holding_days} 天`));
     cards.appendChild(metricCard(t("metric.maxSingleGain"), formatMoney(sum.max_single_gain, "TWD", { signed: true }),
-      { value: "+12.5%", direction: "up" }, "positive"));
+      { value: "—", direction: "flat" },
+      Number(sum.max_single_gain) >= 0 ? "positive" : "negative"));
     p.appendChild(cards);
 
     const chartCard = document.createElement("div");
@@ -226,62 +227,6 @@ export async function mountReports(root) {
     p.appendChild(tbl.el);
   }
 
-  // --- Tax tab
-  async function renderTax() {
-    const p = panelEls.tax;
-    p.innerHTML = "";
-    let est;
-    try { est = await api.reports.taxEstimate({ year: 2026 }); }
-    catch (e) { p.innerHTML = `<p>${e.message}</p>`; return; }
-    p.innerHTML = `
-      <div class="card section">
-        <h2 class="card__title">稅務估算（${est.year}）</h2>
-        <dl class="kv-list">
-          <dt>${t("rpt.tax.twDividend")}</dt>
-          <dd class="num">${formatMoney(est.tw_dividend_income, "TWD", { decimals: 0 })}</dd>
-          <dt>${t("rpt.tax.usWithholding")}</dt>
-          <dd class="num">${est.us_withholding_usd} USD (${formatMoney(est.us_withholding_twd, "TWD", { decimals: 0 })})</dd>
-          <dt>${t("rpt.tax.realizedNote", { year: est.year, gain: formatMoney(est.realized_gain, "TWD", { decimals: 0 }), tax: formatMoney(est.taxable_gain, "TWD", { decimals: 0 }) })}</dt>
-          <dd class="num">${formatMoney(est.realized_gain, "TWD", { decimals: 0 })} - ${formatMoney(est.exemption_twd, "TWD", { decimals: 0 })} → ${formatMoney(est.taxable_gain, "TWD", { decimals: 0 })}</dd>
-        </dl>
-        <div class="badge badge--warning" role="status">${t("rpt.tax.disclaimer")}</div>
-        <div style="margin-top: var(--space-4); display:flex; gap: var(--space-2);">
-          <button type="button" class="btn btn--secondary" data-action="copy">${t("rpt.tax.copySummary")}</button>
-          <button type="button" class="btn btn--secondary" data-action="csv">${t("rpt.tax.downloadCsv")}</button>
-        </div>
-        <ul style="margin-top: var(--space-4); font-size: var(--text-sm); color: var(--color-text-muted); list-style: disc; padding-left: var(--space-6);">
-          ${est.notes.map(n => `<li>${escapeHtml(n)}</li>`).join("")}
-        </ul>
-      </div>
-    `;
-    p.querySelector("[data-action=copy]").addEventListener("click", async () => {
-      const text = [
-        `${est.year} 稅務估算`,
-        `台股利得：${formatMoney(est.tw_dividend_income, "TWD", { decimals: 0 })}`,
-        `美股預扣：${est.us_withholding_usd} USD`,
-        `已實現損益：${formatMoney(est.realized_gain, "TWD", { decimals: 0 })} - 免稅額 ${formatMoney(est.exemption_twd, "TWD", { decimals: 0 })} → ${formatMoney(est.taxable_gain, "TWD", { decimals: 0 })}`,
-        est.disclaimer,
-      ].join("\n");
-      try {
-        await navigator.clipboard.writeText(text);
-        toast("已複製", { tone: "success" });
-      } catch (_) {
-        toast("複製失敗", { tone: "error" });
-      }
-    });
-    p.querySelector("[data-action=csv]").addEventListener("click", () => {
-      const csv = [
-        ["Year","TW Dividend (TWD)","US Withholding (USD)","Realized (TWD)","Exemption (TWD)","Taxable (TWD)"],
-        [est.year, est.tw_dividend_income, est.us_withholding_usd, est.realized_gain, est.exemption_twd, est.taxable_gain],
-      ].map(r => r.join(",")).join("\n");
-      const blob = new Blob([csv], { type: "text/csv" });
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = `stock_hold_tax_${est.year}.csv`;
-      a.click();
-    });
-  }
-
   function metricCard(label, value, delta, semantic) {
     const card = document.createElement("div");
     card.className = "metric-card";
@@ -294,7 +239,7 @@ export async function mountReports(root) {
   }
 
   async function reloadAll() {
-    await Promise.all([renderRealized(), renderUnrealized(), renderDividend(), renderTax()]);
+    await Promise.all([renderRealized(), renderUnrealized(), renderDividend()]);
   }
   await reloadAll();
 }

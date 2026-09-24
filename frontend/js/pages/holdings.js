@@ -60,14 +60,16 @@ export async function mountHoldings(root) {
   ]);
 
   // Compute totals
-  let totalCostTwd = 0, totalMarketTwd = 0, totalUnrealizedTwd = 0;
+  let totalCostTwd = 0, totalMarketTwd = 0, totalUnrealizedTwd = 0, totalTtmDividend = 0;
   rows.forEach((h) => {
     const fx = Number(h.fx_rate || 1);
     totalCostTwd += Number(h.avg_cost) * Number(h.qty) * fx;
     totalMarketTwd += Number(h.current_price) * Number(h.qty) * fx;
     totalUnrealizedTwd += (Number(h.current_price) - Number(h.avg_cost)) * Number(h.qty) * fx;
+    totalTtmDividend += Number(h.ttm_per_share || 0) * Number(h.qty);
   });
   const unrealizedPct = totalCostTwd > 0 ? (totalUnrealizedTwd / totalCostTwd) * 100 : 0;
+  const portfolioYield = totalMarketTwd > 0 ? (totalTtmDividend / totalMarketTwd) * 100 : null;
 
   function metricCard(label, value, delta, semantic) {
     const card = document.createElement("div");
@@ -92,8 +94,8 @@ export async function mountHoldings(root) {
   ));
   summaryHost.appendChild(metricCard(
     t("metric.dividendYield"),
-    "3.80%",
-    { value: "—", direction: "flat" },
+    portfolioYield !== null ? formatPercent(portfolioYield.toFixed(2)) : "—",
+    portfolioYield !== null ? { value: formatMoney(String(Math.round(totalTtmDividend)), "TWD", { decimals: 0 }), direction: "flat" } : { value: "—", direction: "flat" },
   ));
 
   // Build table
@@ -172,8 +174,8 @@ export async function mountHoldings(root) {
         {
           key: "yield", header: t("hold.col.yield"), numeric: true, align: "right", width: "80px",
           cell: (row) => {
-            const y = yieldFor(row);
-            return y ? `<span class="num">${formatPercent(String(y))}</span>` : "—";
+            const y = yieldPercent(row);
+            return y !== null ? `<span class="num">${formatPercent(y.toFixed(2))}</span>` : "—";
           },
         },
       ],
@@ -206,10 +208,12 @@ function changePct(row) {
   return `<span class="${cls}" style="font-size: var(--text-xs);">${formatPercent(String(pct.toFixed(2)))}${arrow}</span>`;
 }
 
-function yieldFor(row) {
-  // toy estimate: hardcoded by symbol for demo
-  const map = { "0056": 6.4, "00878": 4.5, "2330": 2.1, "AAPL": 0.5, "MSFT": 0.7, "VTI": 1.4 };
-  return map[row.symbol] ?? null;
+function yieldPercent(row) {
+  const ttm = Number(row.ttm_per_share);
+  const price = Number(row.current_price);
+  if (!Number.isFinite(ttm) || ttm <= 0) return null;
+  if (!Number.isFinite(price) || price <= 0) return null;
+  return (ttm / price) * 100;
 }
 
 function nameOf(list, id) { return list.find(x => x.id === id)?.name ?? "—"; }

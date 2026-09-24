@@ -519,8 +519,17 @@ if ($method === 'POST' && $path === '/transactions/batch-delete') {
 }
 
 if ($method === 'GET' && $path === '/holdings') {
-    $sql = 'SELECT p.*,s.symbol,s.name,s.currency,a.name AS account_name,COALESCE((SELECT close FROM prices pr WHERE pr.security_id=p.security_id AND pr.user_id=p.user_id ORDER BY pr.date DESC LIMIT 1),0) AS current_price FROM positions p JOIN securities s ON s.id=p.security_id AND s.user_id=p.user_id JOIN accounts a ON a.id=p.account_id AND a.user_id=p.user_id WHERE p.qty > 0 AND p.user_id=? ORDER BY s.symbol,a.name';
-    $stmt = $pdo->prepare($sql); $stmt->execute([$userId]);
+    $ttmSince = (new DateTimeImmutable('-1 year', new DateTimeZone('UTC')))->format('Y-m-d');
+    $sql = 'SELECT p.*,s.symbol,s.name,s.currency,a.name AS account_name,'
+        . 'COALESCE((SELECT close FROM prices pr WHERE pr.security_id=p.security_id AND pr.user_id=p.user_id ORDER BY pr.date DESC LIMIT 1), 0) AS current_price,'
+        . 'COALESCE((SELECT SUM(amount_per_share) FROM dividends d WHERE d.security_id=p.security_id AND d.user_id=p.user_id AND d.pay_date >= ?), 0) AS ttm_per_share,'
+        . 'p.realized_pl AS position_realized_pl '
+        . 'FROM positions p '
+        . 'JOIN securities s ON s.id=p.security_id AND s.user_id=p.user_id '
+        . 'JOIN accounts a ON a.id=p.account_id AND a.user_id=p.user_id '
+        . 'WHERE p.qty > 0 AND p.user_id=? ORDER BY s.symbol,a.name';
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute([$ttmSince, $userId]);
     envelope_ok(list_data($stmt->fetchAll()));
 }
 if ($method === 'GET' && $path === '/dividends') {
@@ -688,19 +697,201 @@ if ($method === 'GET' && $path === '/dashboard/monthly-pnl') {
         'unrealized' => array_map(static fn (float $v): string => (string)$v, $unrealizedSeries),
     ]);
 }
-if ($method === 'GET' && preg_match('#^/reports/(realized|unrealized|dividends|tax-estimate)$#', $path, $match)) {
-    if ($match[1] === 'dividends') {
-        $stmt = $pdo->prepare('SELECT d.id,d.ex_date,d.pay_date,d.amount_per_share AS per_share,d.currency,s.symbol,s.name FROM dividends d JOIN securities s ON s.id=d.security_id AND s.user_id=d.user_id WHERE d.user_id=? ORDER BY d.pay_date DESC'); $stmt->execute([$userId]); $rows = $stmt->fetchAll();
-        foreach ($rows as &$row) { $row['qty'] = '0'; $row['amount_twd'] = '0'; }
-        unset($row);
-        envelope_ok($rows);
-    } elseif ($match[1] === 'tax-estimate') {
-        envelope_ok(['year' => (int)gmdate('Y'), 'tw_dividend_income' => '0', 'tw_dividend_taxable' => '0', 'us_withholding_usd' => '0', 'us_withholding_twd' => '0', 'realized_gain' => '0', 'exemption_twd' => '100000', 'taxable_gain' => '0', 'notes' => [], 'disclaimer' => '僅供估算，非正式稅務申報結果。']);
-    } elseif ($match[1] === 'realized') {
-        envelope_ok(['summary' => ['total_realized' => '0', 'winning_rate_pct' => '0', 'wins' => 0, 'total_trades' => 0, 'avg_holding_days' => 0, 'max_single_gain' => '0', 'total_dividend_twd' => '0', 'total_dividend_usd' => '0'], 'monthly' => ['labels' => [], 'values' => []], 'trades' => []]);
-    } else {
-        envelope_ok([]);
+if ($method === 'GET' && $path === '/reports/realized') {
+    $from = $_GET['from'] ?? null;
+    $to   = $_GET['to'] ?? null;
+    $fromSql = (is_string($from) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $from)) ? $from : null;
+    $toSql   = (is_string($to)   && preg_match('/^\d{4}-\d{2}-\d{2}$/', $to))   ? $to   : null;
+
+    $pairStmt = $pdo->prepare('SELECT DISTINCT t.account_id, t.security_id, s.symbol '
+        . 'FROM transactions t JOIN securities s ON s.id=t.security_id AND s.user_id=t.user_id '
+        . 'WHERE t.user_id=? AND t.security_id IS NOT NULL');
+    $pairStmt->execute([$userId]);
+    $pairs = $pairStmt->fetchAll();
+
+    $txStmt = $pdo->prepare('SELECT type, qty, price, fees, txn_date, id FROM transactions '
+        . 'WHERE user_id=? AND account_id=? AND security_id=? ORDER BY txn_date, created_at, id');
+
+    // 12 month-buckets ending at $to (or today), aligned with the calendar.
+    $tz = new DateTimeZone('UTC');
+    $endD = $toSql ? new DateTimeImmutable($toSql, $tz) : new DateTimeImmutable('today', $tz);
+    $startD = $fromSql
+        ? new DateTimeImmutable($fromSql, $tz)
+        : $endD->modify('-11 months')->modify('first day of this month');
+    $cursor = $startD->modify('first day of this month');
+    $months = [];
+    while ($cursor <= $endD->modify('first day of this month')) {
+        $months[] = $cursor->format('Y-m-01');
+        $cursor = $cursor->modify('+1 month');
     }
+    $monthBuckets = array_fill_keys($months, 0.0);
+
+    $totalRealized = 0.0;
+    $wins = 0;
+    $totalTrades = 0;
+    $holdDaysSum = 0;
+    $holdDaysCount = 0;
+    $maxGain = 0.0;
+    $trades = [];
+
+    foreach ($pairs as $pair) {
+        $accountId  = (string)$pair['account_id'];
+        $securityId = (string)$pair['security_id'];
+        $symbol     = (string)$pair['symbol'];
+
+        $txStmt->execute([$userId, $accountId, $securityId]);
+        $txs = $txStmt->fetchAll();
+
+        $qty = 0.0;
+        $wac = 0.0;
+        $buyQueue = []; // [{qty, date}] FIFO matching for holding days.
+
+        foreach ($txs as $tx) {
+            $type = strtoupper((string)$tx['type']);
+            $q = (float)$tx['qty'];
+            $price = (float)$tx['price'];
+            $fees = (float)$tx['fees'];
+            $date = (string)$tx['txn_date'];
+            $id   = (string)$tx['id'];
+
+            if ($type === 'BUY') {
+                $totalCost = $q * $price + $fees;
+                $denom = $qty + $q;
+                $wac = $denom > 0 ? ($qty * $wac + $totalCost) / $denom : 0.0;
+                $qty += $q;
+                $buyQueue[] = ['qty' => $q, 'date' => $date];
+            } elseif ($type === 'SELL') {
+                $proceeds = $q * $price - $fees;
+                $costOut  = $q * $wac;
+                $realized = $proceeds - $costOut;
+
+                // FIFO match for holding days on the sold lots.
+                $remaining = $q;
+                $weighted = 0.0;
+                while ($remaining > 0 && !empty($buyQueue)) {
+                    $lot = &$buyQueue[0];
+                    $matched = min($lot['qty'], $remaining);
+                    $buyTs  = strtotime($lot['date']);
+                    $sellTs = strtotime($date);
+                    $days = ($buyTs !== false && $sellTs !== false)
+                        ? max(0, (int)round(($sellTs - $buyTs) / 86400))
+                        : 0;
+                    $weighted += $matched * $days;
+                    $lot['qty'] -= $matched;
+                    $remaining  -= $matched;
+                    if ($lot['qty'] <= 0) {
+                        array_shift($buyQueue);
+                    }
+                    unset($lot);
+                }
+                $holdDays = $q > 0 ? (int)round($weighted / $q) : 0;
+
+                $qty -= $q;
+                if ($qty <= 0) {
+                    $qty = 0.0;
+                    $wac = 0.0;
+                    $buyQueue = [];
+                }
+
+                $inRange = (($fromSql === null || $date >= $fromSql) && ($toSql === null || $date <= $toSql));
+                if ($inRange) {
+                    $totalRealized += $realized;
+                    if ($realized > 0) $wins++;
+                    $totalTrades++;
+                    $holdDaysSum += $holdDays;
+                    $holdDaysCount++;
+                    if ($realized > $maxGain) {
+                        $maxGain = $realized;
+                    }
+                    $sellMonth = (new DateTimeImmutable($date))->format('Y-m-01');
+                    if (isset($monthBuckets[$sellMonth])) {
+                        $monthBuckets[$sellMonth] += $realized;
+                    }
+                    if (count($trades) < 200) {
+                        $trades[] = [
+                            'id'           => $id,
+                            'symbol'       => $symbol,
+                            'account_id'   => $accountId,
+                            'sell_date'    => $date,
+                            'qty'          => (string)$q,
+                            'price'        => (string)$price,
+                            'proceeds'     => (string)round($proceeds, 2),
+                            'cost_basis'   => (string)round($costOut, 2),
+                            'realized_pl'  => (string)round($realized, 2),
+                            'holding_days' => $holdDays,
+                        ];
+                    }
+                }
+            }
+        }
+    }
+
+    $winRate = $totalTrades > 0 ? round($wins / $totalTrades * 100, 2) : 0;
+    $avgHold = $holdDaysCount > 0 ? (int)round($holdDaysSum / $holdDaysCount) : 0;
+    $labels = array_map(static fn (string $ym): string => (new DateTimeImmutable($ym))->format('n') . '月', array_keys($monthBuckets));
+
+    envelope_ok([
+        'summary' => [
+            'total_realized'       => (string)round($totalRealized, 2),
+            'winning_rate_pct'     => (string)$winRate,
+            'wins'                 => $wins,
+            'total_trades'         => $totalTrades,
+            'avg_holding_days'     => $avgHold,
+            'max_single_gain'      => (string)round($maxGain, 2),
+            'total_dividend_twd'   => '0',
+            'total_dividend_usd'   => '0',
+        ],
+        'monthly' => [
+            'labels' => $labels,
+            'values' => array_map(static fn (float $v): string => (string)round($v, 2), array_values($monthBuckets)),
+        ],
+        'trades'  => array_reverse($trades),
+    ]);
+}
+
+if ($method === 'GET' && $path === '/reports/unrealized') {
+    $stmt = $pdo->prepare(
+        'SELECT p.account_id, p.security_id, s.symbol, s.name, s.currency, p.qty, p.avg_cost, p.realized_pl, '
+        . 'COALESCE((SELECT close FROM prices pr WHERE pr.security_id=p.security_id AND pr.user_id=p.user_id ORDER BY pr.date DESC LIMIT 1), 0) AS current_price, '
+        . 'COALESCE((SELECT date FROM prices pr WHERE pr.security_id=p.security_id AND pr.user_id=p.user_id ORDER BY pr.date DESC LIMIT 1), "") AS price_date, '
+        . 'COALESCE((SELECT SUM(amount_per_share) FROM dividends d WHERE d.security_id=p.security_id AND d.user_id=p.user_id AND d.pay_date >= ?), 0) AS ttm_per_share '
+        . 'FROM positions p JOIN securities s ON s.id=p.security_id AND s.user_id=p.user_id '
+        . 'WHERE p.qty > 0 AND p.user_id=? ORDER BY s.symbol, p.account_id');
+    $ttmSince = (new DateTimeImmutable('-1 year', new DateTimeZone('UTC')))->format('Y-m-d');
+    $stmt->execute([$ttmSince, $userId]);
+    $rows = array_map(static function (array $r): array {
+        $qty = (float)$r['qty'];
+        $current = (float)$r['current_price'];
+        $avg = (float)$r['avg_cost'];
+        $market = $qty * $current;
+        $unrealized = $qty * ($current - $avg);
+        $pct = $avg > 0 ? round(($current - $avg) / $avg * 100, 2) : 0;
+        return [
+            'security_id'        => (string)$r['security_id'],
+            'account_id'         => (string)$r['account_id'],
+            'symbol'             => (string)$r['symbol'],
+            'name'               => (string)$r['name'],
+            'currency'           => (string)$r['currency'],
+            'qty'                => (string)$qty,
+            'avg_cost'           => (string)$avg,
+            'current_price'      => (string)$current,
+            'price_date'         => (string)$r['price_date'],
+            'market_value'       => (string)round($market, 2),
+            'market_value_twd'   => (string)round($market, 2),
+            'unrealized_pnl'     => (string)round($unrealized, 2),
+            'unrealized_pnl_pct' => (string)$pct,
+            'ttm_per_share'      => (string)$r['ttm_per_share'],
+            'ttm_dividend'       => (string)round((float)$r['ttm_per_share'] * $qty, 2),
+        ];
+    }, $stmt->fetchAll());
+    envelope_ok(list_data($rows));
+}
+
+if ($method === 'GET' && $path === '/reports/dividends') {
+    $stmt = $pdo->prepare('SELECT d.id,d.ex_date,d.pay_date,d.amount_per_share AS per_share,d.currency,s.symbol,s.name FROM dividends d JOIN securities s ON s.id=d.security_id AND s.user_id=d.user_id WHERE d.user_id=? ORDER BY d.pay_date DESC'); $stmt->execute([$userId]); $rows = $stmt->fetchAll();
+    foreach ($rows as &$row) { $row['qty'] = '0'; $row['amount_twd'] = '0'; }
+    unset($row);
+    envelope_ok($rows);
 }
 if ($method === 'GET' && $path === '/settings/quotes') {
     $stmt = $pdo->prepare('SELECT MAX(created_at) FROM prices WHERE user_id=?'); $stmt->execute([$userId]); $last = $stmt->fetchColumn();
