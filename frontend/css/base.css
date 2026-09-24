@@ -6,6 +6,9 @@
   box-sizing: border-box;
 }
 
+/* Preserve the native hidden attribute even when component styles set display. */
+[hidden] { display: none !important; }
+
 html {
   font-family: var(--font-family-sans);
   font-size: 16px;
