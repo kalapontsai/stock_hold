@@ -110,6 +110,11 @@ const STRINGS = {
     "txn.field.fees":             "手續費",
     "txn.field.fxRate":           "匯率",
     "txn.field.note":             "備註",
+    "txn.field.amount":           "金額",
+    "txn.amount.hint":            "銀行類交易必填；未填時自動依類型計算（存入/轉入為正、提出/轉出/手續費為負）",
+    "txn.category.label":         "交易類別",
+    "txn.category.bank":          "銀行",
+    "txn.category.stock":         "證卷",
     "txn.note.divHint":           "DIV 類型將自動寫入 dividends 表，amount_per_share = 價格 × 數量",
     "txn.qty.unit":               "股 / 單位",
     "txn.empty":                  "這段時間沒有交易",
@@ -126,6 +131,14 @@ const STRINGS = {
     "txnType.FEE":                "手續費",
     "txnType.SPLIT":              "分割",
     "txnType.MERGER":             "合併",
+
+    /* Localized English for the new strings (kept short, not full translation). */
+    "txn.category.label":         "Category",
+    "txn.category.bank":          "Bank",
+    "txn.category.stock":         "Brokerage",
+    "set.acc.action.disable":     "Disable",
+    "set.acc.action.enable":      "Enable",
+    "set.acc.filter.showDisabled":  "Show disabled accounts",
 
     /* Holdings */
     "hold.title":                 "持倉 Holdings",
@@ -203,6 +216,13 @@ const STRINGS = {
     "set.acc.type.broker":        "券商",
     "set.acc.status.active":      "啟用",
     "set.acc.status.disabled":    "停用",
+    "set.acc.action.disable":     "停用",
+    "set.acc.action.enable":      "啟用",
+    "set.acc.confirmDisable.title": "停用帳戶",
+    "set.acc.confirmDisable.body":  "停用後此帳戶不會再出現在「新增交易」的帳戶選單；歷史交易與持倉紀錄會完整保留。如需完全清除請從維護頁清表。",
+    "set.acc.confirmEnable.title":  "啟用帳戶",
+    "set.acc.confirmEnable.body":   "啟用後此帳戶會重新出現在「新增交易」的帳戶選單。",
+    "set.acc.filter.showDisabled":  "顯示已停用帳戶",
 
     /* Errors / feedback */
     "error.unauthorized":         "請重新設定 API token",

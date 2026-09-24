@@ -297,12 +297,17 @@ function buildAccountsTable(accounts, refresh) {
       { key: "status", header: "狀態", cell: (r) => String(r.status).toLowerCase() === "active"
         ? `<span class="badge badge--positive">${escapeHtml(t("set.acc.status.active"))}</span>`
         : `<span class="badge badge--neutral">${escapeHtml(t("set.acc.status.disabled"))}</span>` },
-      { key: "actions", header: "", cell: (r) =>
-          `<button type="button" class="btn btn--ghost btn--sm" data-edit="${escapeHtml(r.id)}">${escapeHtml(t("action.edit"))}</button>
-           <button type="button" class="btn btn--ghost btn--sm" data-del="${escapeHtml(r.id)}">${escapeHtml(t("action.delete"))}</button>` },
+      { key: "actions", header: "", cell: (r) => {
+        const isInactive = String(r.status).toLowerCase() !== "active";
+        // 仍列出刪除按鈕，但停用中的帳戶明確標示，刪除按鈕文字與行為都對齊「停用」語意
+        return `<button type="button" class="btn btn--ghost btn--sm" data-edit="${escapeHtml(r.id)}">${escapeHtml(t("action.edit"))}</button>
+           <button type="button" class="btn btn--ghost btn--sm" data-del="${escapeHtml(r.id)}" ${isInactive ? "disabled" : ""}>${escapeHtml(t("set.acc.action.disable"))}</button>`;
+      } },
     ],
     data: accounts,
     rowKey: (r) => r.id,
+    // 讓 is-inactive 視覺樣式（刪除線 + 灰色名字）套到停用中的帳戶
+    rowClass: (r) => String(r.status).toLowerCase() !== "active" ? "is-inactive" : "",
   });
   // Wire action buttons (delegated)
   tbl.el.addEventListener("click", async (e) => {
@@ -310,12 +315,18 @@ function buildAccountsTable(accounts, refresh) {
     const delId = e.target.closest("[data-del]")?.dataset.del;
     if (editId) openAccountModal(accounts.find(a => a.id === editId), accounts, refresh);
     if (delId) {
+      const target = accounts.find(a => a.id === delId);
+      // 已停用的帳戶按鈕雖然 disabled，但保險起見再做一次 runtime guard
+      if (target && String(target.status).toLowerCase() !== "active") {
+        toast("此帳戶已停用", { tone: "info" });
+        return;
+      }
       const ok = await confirmDialog({
-        title: "刪除帳戶",
-        body: "刪除帳戶將一併取消其關聯的持倉與交易紀錄。",
-        confirmLabel: t("action.delete"),
+        title: t("set.acc.confirmDisable.title"),
+        body: t("set.acc.confirmDisable.body"),
+        confirmLabel: t("set.acc.action.disable"),
         confirmTone: "danger",
-    });
+      });
       if (ok) {
         try {
           await api.accounts.remove(delId);

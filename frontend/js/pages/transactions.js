@@ -266,27 +266,64 @@ export async function mountTransactions(root) {
 
     const form = document.createElement("form");
     form.noValidate = true;
+
+    // Bank ↔ Stock toggle：依類別顯示對應的 type 集合，並決定 qty/price/symbol/amount 欄位是否啟用。
+    const BANK_TYPES = ["DEPOSIT","WITHDRAW","TRANSFER_IN","TRANSFER_OUT","FEE"];
+    const STOCK_TYPES = ["BUY","SELL","DIVIDEND","SPLIT","MERGER"];
+    const typesForCategory = (cat) => (cat === "bank" ? BANK_TYPES : STOCK_TYPES);
+    const isBankType = (k) => BANK_TYPES.includes(k);
+    const initialAccount =
+      (row && accounts.find(a => a.id === row.account_id)) ||
+      accounts.find(a => String(a.status).toLowerCase() === "active") ||
+      accounts[0];
+    const initialCategory = row
+      ? (isBankType(row.type) ? "bank" : "stock")
+      : (initialAccount && String(initialAccount.type).toUpperCase() === "BANK" ? "bank" : "stock");
+    const formatTypeRadios = (cat, selectedType) => {
+      const keys = typesForCategory(cat);
+      const fallback = keys[0];
+      const selected = keys.includes(selectedType) ? selectedType : fallback;
+      return keys.map((k) => `
+            <label class="radio-group__item">
+              <input type="radio" name="type" value="${k}" ${k === selected ? "checked" : ""}>
+              ${t("txnType." + k)}
+            </label>
+          `).join("");
+    };
+    const filterAccountOptions = (cat, selectedId) => {
+      const wanted = cat === "bank" ? "BANK" : "BROKER";
+      return accounts
+        .filter(a => String(a.status).toLowerCase() === "active")
+        .filter(a => String(a.type).toUpperCase() === wanted)
+        .map(a => `<option value="${a.id}" ${a.id === selectedId ? "selected" : ""}>${escapeHtml(a.name)} (${a.currency})</option>`)
+        .join("");
+    };
+
     form.innerHTML = `
+      <div class="form-field">
+        <label class="form-field__label">${t("txn.category.label")}</label>
+        <div class="segmented" role="radiogroup" aria-label="${t("txn.category.label")}" data-category-group>
+          <button type="button" class="segmented__btn" data-category="bank" aria-pressed="${initialCategory === "bank"}">${t("txn.category.bank")}</button>
+          <button type="button" class="segmented__btn" data-category="stock" aria-pressed="${initialCategory === "stock"}">${t("txn.category.stock")}</button>
+        </div>
+      </div>
       <div class="form-field">
         <label class="form-field__label form-field__label--required">${t("txn.field.type")}</label>
         <div class="radio-group" data-radio="type" role="radiogroup" aria-label="${t("txn.field.type")}">
-          ${TYPE_KEYS.map((k, i) => `
-            <label class="radio-group__item">
-              <input type="radio" name="type" value="${k}" ${(!isEdit && i === 0) || (row && row.type === k) ? "checked" : ""}>
-              ${t("txnType." + k)}
-            </label>
-          `).join("")}
+          ${formatTypeRadios(initialCategory, row?.type)}
         </div>
       </div>
       <div class="form-field">
         <label class="form-field__label form-field__label--required" for="txn-acc">${t("txn.field.account")}</label>
-        <select class="select" id="txn-acc" name="account_id" required>
-          ${accounts.filter(a => String(a.status).toLowerCase() === "active").map(a =>
-            `<option value="${a.id}" ${(row && row.account_id === a.id) ? "selected" : ""}>${escapeHtml(a.name)} (${a.currency})</option>`
-          ).join("")}
+        <select class="select" id="txn-acc" name="account_id" required data-account-select>
+          ${isEdit
+            ? accounts.filter(a => String(a.status).toLowerCase() === "active").map(a =>
+                `<option value="${a.id}" ${a.id === row.account_id ? "selected" : ""}>${escapeHtml(a.name)} (${a.currency})</option>`
+              ).join("")
+            : filterAccountOptions(initialCategory, initialAccount?.id)}
         </select>
       </div>
-      <div class="form-field">
+      <div class="form-field" data-symbol-field>
         <label class="form-field__label" for="txn-sym">${t("txn.field.symbol")}</label>
         <select class="select" id="txn-sym" name="security_id">
           <option value="">—</option>
@@ -299,13 +336,13 @@ export async function mountTransactions(root) {
         <label class="form-field__label form-field__label--required" for="txn-date">${t("txn.field.date")}</label>
         <input type="date" class="input" id="txn-date" name="txn_date" required value="${row ? row.txn_date : new Date().toISOString().slice(0,10)}">
       </div>
-      <div class="grid grid--two">
-        <div class="form-field">
+      <div class="grid grid--two" data-stock-fields>
+        <div class="form-field" data-qty-field>
           <label class="form-field__label" for="txn-qty">${t("txn.field.qty")}</label>
           <div id="txn-qty"></div>
           <span class="form-field__hint">${t("txn.qty.unit")}</span>
         </div>
-        <div class="form-field">
+        <div class="form-field" data-price-field>
           <label class="form-field__label" for="txn-price">${t("txn.field.price")}</label>
           <div id="txn-price"></div>
         </div>
@@ -320,6 +357,11 @@ export async function mountTransactions(root) {
           <input type="text" inputmode="decimal" class="input input--number" id="txn-fx" name="fx_rate" value="${row?.fx_rate ?? "1.0000"}">
         </div>
       </div>
+      <div class="form-field" data-amount-field hidden>
+        <label class="form-field__label form-field__label--required" for="txn-amount">${t("txn.field.amount")}</label>
+        <input type="text" inputmode="decimal" class="input input--number" id="txn-amount" name="amount" value="${row && isBankType(row.type) ? (row.amount ?? "") : ""}" placeholder="0">
+        <span class="form-field__hint">${t("txn.amount.hint")}</span>
+      </div>
       <div class="form-field">
         <label class="form-field__label" for="txn-note">${t("txn.field.note")}</label>
         <textarea class="textarea" id="txn-note" name="note">${row?.note ?? ""}</textarea>
@@ -333,25 +375,92 @@ export async function mountTransactions(root) {
     form.querySelector("#txn-qty").appendChild(qtyInput.el);
     form.querySelector("#txn-price").appendChild(priceInput.el);
 
-    // Type-aware hint + field disabling (per WIREFRAME §2.3)
+    // 依當前 category 切換欄位啟用 / 隱藏 / 必填。
     function refreshTypeState() {
+      const cat = form.querySelector('[data-category-group] .segmented__btn[aria-pressed="true"]')?.dataset.category || "stock";
       const type = form.querySelector('input[name="type"]:checked')?.value;
-      const isCashOnly = ["DEPOSIT","WITHDRAW","TRANSFER_IN","TRANSFER_OUT","FEE"].includes(type);
+      const isCashOnly = isBankType(type);
       const isDiv = type === "DIVIDEND";
+      const symField = form.querySelector('[data-symbol-field]');
+      const symLabel = symField.querySelector('.form-field__label');
       const symSel = form.querySelector("#txn-sym");
-      symSel.disabled = isCashOnly;
-      symSel.required = !isCashOnly;
+      const stockGrid = form.querySelector('[data-stock-fields]');
+      const qtyField = form.querySelector('[data-qty-field]');
+      const qtyLabel = qtyField.querySelector('.form-field__label');
+      const priceField = form.querySelector('[data-price-field]');
+      const priceLabel = priceField.querySelector('.form-field__label');
+      const amtField = form.querySelector('[data-amount-field]');
+      const amtLabel = amtField.querySelector('.form-field__label');
+      const amtInput = form.querySelector("#txn-amount");
+
+      if (cat === "bank") {
+        symField.hidden = true;
+        symSel.disabled = true;
+        symSel.required = false;
+        symLabel.classList.remove("form-field__label--required");
+        stockGrid.hidden = true;
+        qtyField.querySelector("input").disabled = true;
+        priceField.querySelector("input").disabled = true;
+        qtyLabel.classList.remove("form-field__label--required");
+        priceLabel.classList.remove("form-field__label--required");
+        amtField.hidden = false;
+        amtInput.disabled = false;
+        amtInput.required = true;
+        amtLabel.classList.add("form-field__label--required");
+      } else {
+        symField.hidden = false;
+        symSel.disabled = isCashOnly;
+        symSel.required = !isCashOnly;
+        if (!isCashOnly) symLabel.classList.add("form-field__label--required");
+        else symLabel.classList.remove("form-field__label--required");
+        stockGrid.hidden = false;
+        qtyField.querySelector("input").disabled = false;
+        priceField.querySelector("input").disabled = false;
+        qtyLabel.classList.remove("form-field__label--required");
+        priceLabel.classList.remove("form-field__label--required");
+        amtField.hidden = true;
+        amtInput.disabled = true;
+        amtInput.required = false;
+        amtLabel.classList.remove("form-field__label--required");
+      }
       form.querySelector("#txn-hint").textContent = isDiv ? t("txn.note.divHint") : "";
       const acc = accounts.find(a => a.id === form.querySelector("#txn-acc").value);
-      if (acc) {
+      if (acc && cat === "stock") {
         priceInput.input.dataset.currency = acc.currency;
-        // visual currency suffix
         const suf = priceInput.el.querySelector(".input-group__suffix");
         if (suf) suf.textContent = acc.currency;
       }
     }
     form.querySelectorAll('input[name="type"]').forEach((r) => r.addEventListener("change", refreshTypeState));
     form.querySelector("#txn-acc").addEventListener("change", refreshTypeState);
+
+    // 切換類別時：重新生成 type 選項 + 重新過濾帳戶下拉（編輯時保留原帳戶）
+    form.querySelectorAll('[data-category-group] .segmented__btn').forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const cat = btn.dataset.category;
+        form.querySelectorAll('[data-category-group] .segmented__btn').forEach((b) => {
+          b.setAttribute("aria-pressed", String(b === btn));
+        });
+        const radioGroup = form.querySelector('[data-radio="type"]');
+        const currentType = form.querySelector('input[name="type"]:checked')?.value;
+        const stillValid = typesForCategory(cat).includes(currentType);
+        const nextType = stillValid ? currentType : typesForCategory(cat)[0];
+        radioGroup.innerHTML = formatTypeRadios(cat, nextType);
+        radioGroup.querySelectorAll('input[name="type"]').forEach((r) =>
+          r.addEventListener("change", refreshTypeState)
+        );
+        if (!isEdit) {
+          const sel = form.querySelector('[data-account-select]');
+          const currentAccId = sel.value;
+          const accObj = accounts.find(a => a.id === currentAccId);
+          const accType = accObj && String(accObj.type).toUpperCase();
+          const wanted = cat === "bank" ? "BANK" : "BROKER";
+          const keepId = accType === wanted ? currentAccId : null;
+          sel.innerHTML = filterAccountOptions(cat, keepId);
+        }
+        refreshTypeState();
+      });
+    });
     refreshTypeState();
 
     const cancelBtn = document.createElement("button");
@@ -410,6 +519,7 @@ export async function mountTransactions(root) {
           price: priceInput.getRawValue(),
           fees: fd.get("fees") || "0",
           fx_rate: fd.get("fx_rate") || "1.0000",
+          amount: fd.get("amount") || null,
           note: fd.get("note") || "",
         };
         if (isEdit) await api.transactions.update(row.id, body);

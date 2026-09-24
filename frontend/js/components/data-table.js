@@ -20,6 +20,7 @@ export function createDataTable({
   columns,
   data = [],
   rowKey,
+  rowClass,
   onRowClick,
   loading = false,
   emptyState,
@@ -187,7 +188,14 @@ export function createDataTable({
       const tr = document.createElement("tr");
       const key = rowKey(row);
       tr.dataset.key = key;
-      if (selectedKeys.has(key)) tr.style.background = "var(--color-primary-50)";
+      // Optional per-row CSS class hook (e.g. `rowClass: r => r.status !== "active" ? "is-inactive" : ""`)
+      if (typeof rowClass === "function") {
+        const cls = rowClass(row);
+        if (cls) String(cls).split(/\s+/).filter(Boolean).forEach((c) => tr.classList.add(c));
+      }
+      // Use a class instead of an inline style so dark mode can pick its
+      // own selected-row background (see .is-selected in components.css).
+      if (selectedKeys.has(key)) tr.classList.add("is-selected");
 
       if (selectable) {
         const td = document.createElement("td");
@@ -200,7 +208,7 @@ export function createDataTable({
           e.stopPropagation();
           if (cb.checked) selectedKeys.add(key);
           else selectedKeys.delete(key);
-          tr.style.background = cb.checked ? "var(--color-primary-50)" : "";
+          tr.classList.toggle("is-selected", cb.checked);
         });
         td.appendChild(cb);
         tr.appendChild(td);
