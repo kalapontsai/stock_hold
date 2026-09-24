@@ -310,7 +310,36 @@ export async function mountSettings(root) {
     try { await api.rawRequest("GET", "/health"); toast("健康檢查通過", { tone: "success" }); }
     catch (e) { toast(e.message, { tone: "error" }); }
   });
-  maintenanceSection.querySelector("[data-action=update]").addEventListener("click", () => toast("目前版本由本機 Apache 提供，請依部署流程更新檔案。", { tone: "info" }));
+  maintenanceSection.querySelector("[data-action=update]").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    if (button.disabled) return;
+    button.disabled = true;
+    try {
+      const data = await api.updates.check();
+      if (data.status === "error") {
+        toast(`檢查更新失敗：${data.message || "未知錯誤"}`, { tone: "error", durationMs: 5000 });
+        return;
+      }
+      if (data.status === "no_releases") {
+        toast("此 repo 尚未發布任何 release", { tone: "info" });
+        return;
+      }
+      if (data.has_update) {
+        toast(`有新版本 ${data.latest_version}（目前 ${data.current_version}）`, {
+          tone: "info",
+          title: "可更新",
+          durationMs: 8000,
+        });
+      } else {
+        const staleNote = data.stale ? `\n（cache ${data.checked_at}，剛剛無法連線 GitHub）` : "";
+        toast(`目前版本 ${data.current_version} 為最新${staleNote}`, { tone: "success" });
+      }
+    } catch (e) {
+      toast(`檢查更新失敗：${e?.message || "未知錯誤"}`, { tone: "error", durationMs: 5000 });
+    } finally {
+      button.disabled = false;
+    }
+  });
   sections.appendChild(maintenanceSection);
 
   // Apply i18n from saved locale

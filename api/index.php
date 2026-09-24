@@ -22,6 +22,9 @@ $pdo = db();
 if ($method === 'GET' && $path === '/health') {
     envelope_ok(['service' => 'stock_hold', 'version' => STOCK_HOLD_VERSION]);
 }
+if ($method === 'GET' && $path === '/update') {
+    update_check($pdo);
+}
 if ($method === 'GET' && $path === '/auth/session') {
     $user = current_user($pdo);
     envelope_ok(['csrf_token' => csrf_token(), 'authenticated' => $user !== null, 'user' => $user]);

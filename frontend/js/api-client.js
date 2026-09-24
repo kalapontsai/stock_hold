@@ -340,6 +340,18 @@ export const schema = {
   entity:   (name) => request("GET", `/schema/${name}`),
 };
 
+/* Update check (Settings → Maintenance → 檢查更新)
+ *
+ * Backend proxies the GitHub Releases API, caches the response for an
+ * hour, and compares against STOCK_HOLD_VERSION. Returns:
+ *   { status: "ok" | "no_releases" | "error",
+ *     current_version, latest_version, has_update,
+ *     release_url, published_at, summary, repo, stale, checked_at }
+ */
+export const updates = {
+  check: () => request("GET", "/update"),
+};
+
 /* ---------- Low-level escape hatch ---------- */
 export function rawRequest(method, path, body, opts) {
   return request(method, path, body, opts);

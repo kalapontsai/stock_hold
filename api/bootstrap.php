@@ -318,3 +318,169 @@ function list_data(array $items, int $page = 1, int $pageSize = 25): array
         ],
     ];
 }
+
+/* ---------- Update check (Settings → Maintenance → 檢查更新) ----------
+ *
+ * Backend proxy for GitHub Releases API. We do NOT let the browser call
+ * api.github.com directly because:
+ *   - CSP `connect-src 'self'` would block it.
+ *   - Unauthenticated GitHub API is 60 req/hr per IP; cache once per hour
+ *     so all users behind the same LiteSpeed share a single upstream call.
+ *
+ * Public endpoint — checking for a new release leaks nothing about the
+ * caller, and login UX would be weird if it required auth.
+ */
+function update_repo(): string
+{
+    return env_value('STOCK_HOLD_UPDATE_REPO') ?: 'kalapontsai/stock_hold';
+}
+
+function update_cache_ttl(): int
+{
+    return max(60, (int)(env_value('STOCK_HOLD_UPDATE_CACHE_TTL') ?: 3600));
+}
+
+function update_cache_get(PDO $pdo, string $endpoint, int $ttl): ?array
+{
+    $stmt = $pdo->prepare('SELECT payload_json, fetched_at, expires_at FROM update_cache WHERE endpoint = ?');
+    $stmt->execute([$endpoint]);
+    $row = $stmt->fetch();
+    if (!$row) return null;
+    $expires = strtotime($row['expires_at']) ?: 0;
+    return [
+        'payload' => $row['payload_json'],
+        'fetched_at' => $row['fetched_at'],
+        'fresh' => $expires > time(),
+    ];
+}
+
+function update_cache_put(PDO $pdo, string $endpoint, ?string $etag, string $payload, int $ttl): void
+{
+    $now = now_sql();
+    $expires = gmdate('Y-m-d H:i:s', time() + $ttl);
+    $stmt = $pdo->prepare('INSERT INTO update_cache(endpoint, etag, payload_json, fetched_at, expires_at) VALUES(?,?,?,?,?) ON CONFLICT(endpoint) DO UPDATE SET etag=excluded.etag, payload_json=excluded.payload_json, fetched_at=excluded.fetched_at, expires_at=excluded.expires_at');
+    $stmt->execute([$endpoint, $etag, $payload, $now, $expires]);
+}
+
+// Strip pre-release tag and convert "1.2.3-foo" → [1,2,3]. Treats the
+// environment suffix (e.g. "2.0.0-apache") as equivalent to the bare
+// version. Adequate for our use case; we don't need full semver precedence.
+function version_tuple(string $v): array
+{
+    $base = preg_split('/[-+]/', $v, 2)[0] ?? '0';
+    $parts = array_map('intval', explode('.', $base));
+    while (count($parts) < 3) $parts[] = 0;
+    return array_slice($parts, 0, 3);
+}
+
+// Returns -1 if a<b, 0 if equal, 1 if a>b.
+function version_compare_simple(string $a, string $b): int
+{
+    $ta = version_tuple($a);
+    $tb = version_tuple($b);
+    for ($i = 0; $i < 3; $i++) {
+        if ($ta[$i] < $tb[$i]) return -1;
+        if ($ta[$i] > $tb[$i]) return 1;
+    }
+    return 0;
+}
+
+function update_check_respond(string $repo, array $payload, bool $stale, array $extra = []): never
+{
+    $base = [
+        'current_version' => STOCK_HOLD_VERSION,
+        'repo' => $repo,
+        'stale' => $stale,
+        'checked_at' => gmdate('c'),
+    ];
+    if (!empty($payload['no_releases']) || $payload['tag_name'] === '') {
+        envelope_ok($base + [
+            'latest_version' => null,
+            'has_update' => false,
+            'status' => 'no_releases',
+            'message' => '此 repo 尚未發布任何 release。',
+            'release_url' => "https://github.com/{$repo}/releases",
+        ] + $extra);
+    }
+    $latest = (string)$payload['tag_name'];
+    $hasUpdate = version_compare_simple(STOCK_HOLD_VERSION, $latest) < 0;
+    envelope_ok($base + [
+        'latest_version' => $latest,
+        'has_update' => $hasUpdate,
+        'status' => 'ok',
+        'release_url' => (string)($payload['html_url'] ?? "https://github.com/{$repo}/releases/tag/{$latest}"),
+        'published_at' => (string)($payload['published_at'] ?? ''),
+        'summary' => (string)($payload['body'] ?? ''),
+    ] + $extra);
+}
+
+function update_check(PDO $pdo): never
+{
+    $repo = update_repo();
+    $ttl = update_cache_ttl();
+    $endpoint = 'release_latest';
+
+    $cached = update_cache_get($pdo, $endpoint, $ttl);
+    $cachedPayload = null;
+    $cachedFresh = false;
+    if ($cached !== null) {
+        $cachedPayload = json_decode((string)$cached['payload'], true);
+        $cachedFresh = (bool)$cached['fresh'];
+    }
+
+    $url = "https://api.github.com/repos/{$repo}/releases/latest";
+    $ctx = stream_context_create([
+        'http' => [
+            'method' => 'GET',
+            'header' => "User-Agent: stock_hold-update-check\r\nAccept: application/vnd.github+json\r\nX-GitHub-Api-Version: 2022-11-28\r\n",
+            'timeout' => 10,
+            'ignore_errors' => true,
+        ],
+    ]);
+    $body = @file_get_contents($url, false, $ctx);
+    $status = 0;
+    if (isset($http_response_header[0]) && preg_match('/HTTP\/[\d.]+\s+(\d+)/', $http_response_header[0], $m)) {
+        $status = (int)$m[1];
+    }
+
+    if (is_string($body) && $body !== '' && $status === 200) {
+        $data = json_decode($body, true);
+        if (is_array($data) && isset($data['tag_name'])) {
+            $payload = [
+                'tag_name' => (string)$data['tag_name'],
+                'name' => (string)($data['name'] ?? $data['tag_name']),
+                'published_at' => (string)($data['published_at'] ?? ''),
+                'html_url' => (string)($data['html_url'] ?? ''),
+                'body' => substr((string)($data['body'] ?? ''), 0, 2000),
+            ];
+            $etag = null;
+            foreach ((array)$http_response_header as $h) {
+                if (stripos($h, 'etag:') === 0) { $etag = trim(substr($h, 5)); break; }
+            }
+            update_cache_put($pdo, $endpoint, $etag, json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), $ttl);
+            update_check_respond($repo, $payload, false);
+        }
+        if (is_array($data) && isset($data['message']) && stripos((string)$data['message'], 'Not Found') !== false) {
+            // 404 — repo has no releases yet. Cache as empty so we don't
+            // re-hit GitHub on every page load.
+            update_cache_put($pdo, $endpoint, null, json_encode(['tag_name' => '', 'no_releases' => true]), $ttl);
+            update_check_respond($repo, ['tag_name' => '', 'no_releases' => true], false);
+        }
+    }
+
+    // Fetch failed or returned unexpected payload — fall back to cache.
+    if (is_array($cachedPayload) && isset($cachedPayload['tag_name'])) {
+        update_check_respond($repo, $cachedPayload, !$cachedFresh, ['fetch_status' => $status]);
+    }
+
+    envelope_ok([
+        'current_version' => STOCK_HOLD_VERSION,
+        'latest_version' => null,
+        'has_update' => false,
+        'status' => 'error',
+        'message' => $status === 0 ? '無法連線 GitHub（network error）' : "GitHub 回應 HTTP {$status}",
+        'repo' => $repo,
+        'stale' => false,
+        'checked_at' => gmdate('c'),
+    ]);
+}
