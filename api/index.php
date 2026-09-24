@@ -532,24 +532,71 @@ if ($method === 'GET' && $path === '/dividends') {
 }
 if ($method === 'GET' && $path === '/dashboard/summary') {
     $count = static function (PDO $pdo, string $sql, int $userId): int { $stmt = $pdo->prepare($sql); $stmt->execute([$userId]); return (int)$stmt->fetchColumn(); };
+    $todaySql = gmdate('Ymd');
+    $monthStartSql = gmdate('Y-m-01 00:00:00');
+
     $accounts = $count($pdo, 'SELECT COUNT(*) FROM accounts WHERE status="ACTIVE" AND user_id=?', $userId);
     $transactions = $count($pdo, 'SELECT COUNT(*) FROM transactions WHERE user_id=?', $userId);
-    $stmt = $pdo->prepare('SELECT COALESCE(SUM(p.qty * COALESCE((SELECT close FROM prices pr WHERE pr.security_id=p.security_id AND pr.user_id=p.user_id ORDER BY pr.date DESC LIMIT 1),0)),0) FROM positions p WHERE p.user_id=?'); $stmt->execute([$userId]); $market = (float)$stmt->fetchColumn();
-    $stmt = $pdo->prepare('SELECT COALESCE(SUM(amount),0) FROM transactions WHERE security_id IS NULL AND user_id=?'); $stmt->execute([$userId]); $cash = (float)$stmt->fetchColumn();
-    $positive = $count($pdo, 'SELECT COUNT(*) FROM positions p WHERE p.qty > 0 AND p.user_id=? AND p.avg_cost <= COALESCE((SELECT close FROM prices pr WHERE pr.security_id=p.security_id AND pr.user_id=p.user_id ORDER BY pr.date DESC LIMIT 1), p.avg_cost)', $userId);
+
+    // Open positions with latest + previous trading-day close for this user.
+    $stmt = $pdo->prepare('SELECT p.qty, p.avg_cost, p.realized_pl, p.updated_at, '
+        . 'COALESCE((SELECT close FROM prices pr WHERE pr.security_id=p.security_id AND pr.user_id=p.user_id ORDER BY pr.date DESC LIMIT 1), 0) AS latest_close, '
+        . 'COALESCE((SELECT close FROM prices pr WHERE pr.security_id=p.security_id AND pr.user_id=p.user_id AND pr.date < ? ORDER BY pr.date DESC LIMIT 1), 0) AS prev_close '
+        . 'FROM positions p WHERE p.qty > 0 AND p.user_id=?');
+    $stmt->execute([$todaySql, $userId]);
+    $positions = $stmt->fetchAll();
+
+    $unrealized = 0.0;
+    $costBasis = 0.0;
+    $prevValue = 0.0;
+    $market = 0.0;
+    $positive = 0;
+    foreach ($positions as $row) {
+        $qty = (float)$row['qty'];
+        $latest = (float)$row['latest_close'];
+        $prev = (float)$row['prev_close'];
+        $avg = (float)$row['avg_cost'];
+        $unrealized += $qty * ($latest - $avg);
+        $costBasis += $qty * $avg;
+        $prevValue += $qty * $prev;
+        $market += $qty * $latest;
+        if ($latest > 0 && $avg <= $latest) $positive++;
+    }
+
+    $todayPnl = $market - $prevValue;
+    $stmt = $pdo->prepare('SELECT COALESCE(SUM(realized_pl), 0) FROM positions WHERE user_id=? AND updated_at >= ?');
+    $stmt->execute([$userId, $monthStartSql]);
+    $realizedMtd = (float)$stmt->fetchColumn();
+    $mtdPnl = $unrealized + $realizedMtd;
+
+    $stmt = $pdo->prepare('SELECT COALESCE(SUM(amount),0) FROM transactions WHERE security_id IS NULL AND user_id=?');
+    $stmt->execute([$userId]);
+    $cash = (float)$stmt->fetchColumn();
     $holdings = $count($pdo, 'SELECT COUNT(*) FROM positions WHERE qty > 0 AND user_id=?', $userId);
     $total = $market + $cash;
+
+    $pct = static function (float $numerator, float $denominator): string {
+        return $denominator > 0 ? (string)round($numerator / $denominator * 100, 2) : '0';
+    };
+
     envelope_ok([
         'total_assets' => (string)$total,
         'total_assets_prev' => (string)$total,
         'market_value' => (string)$market,
         'cash_balance' => (string)$cash,
-        'today_pnl' => '0', 'today_pnl_pct' => '0',
-        'mtd_pnl' => '0', 'mtd_pnl_pct' => '0',
-        'unrealized_pnl' => '0', 'unrealized_pnl_pct' => '0',
-        'realized_mtd' => '0', 'dividend_mtd' => '0',
-        'holdings_count' => $holdings, 'holdings_positive' => $positive,
-        'usage_pct' => 0, 'account_count' => $accounts, 'transaction_count' => $transactions,
+        'today_pnl' => (string)$todayPnl,
+        'today_pnl_pct' => $pct($todayPnl, $prevValue),
+        'mtd_pnl' => (string)$mtdPnl,
+        'mtd_pnl_pct' => $pct($mtdPnl, $costBasis),
+        'unrealized_pnl' => (string)$unrealized,
+        'unrealized_pnl_pct' => $pct($unrealized, $costBasis),
+        'realized_mtd' => (string)$realizedMtd,
+        'dividend_mtd' => '0',
+        'holdings_count' => $holdings,
+        'holdings_positive' => $positive,
+        'usage_pct' => 0,
+        'account_count' => $accounts,
+        'transaction_count' => $transactions,
         'as_of' => gmdate('c'),
     ]);
 }
