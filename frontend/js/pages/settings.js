@@ -60,7 +60,7 @@ export async function mountSettings(root) {
   sections.appendChild(accountsSection);
 
   // ───────── 2. 標的 ─────────
-  const securitiesSection = section(t("set.sec.securities"), "securities");
+  const securitiesSection = section(t("set.sec.securities"), "securities", true);
   const securitiesHost = securitiesSection.querySelector("[data-host]");
   securitiesHost.appendChild(buildSecuritiesTable(securities, () => mountSettings(root)));
   securitiesSection.querySelector("[data-add]").addEventListener("click", () => openSecurityModal(null, securities, () => mountSettings(root)));
