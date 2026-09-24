@@ -82,20 +82,22 @@ export async function mountHoldings(root) {
     return card;
   }
 
+  // totalUnrealizedTwd / unrealizedPct are accumulated in the totals loop above
+  // and are reused directly by the third summary card.
+
   summaryHost.appendChild(metricCard(t("metric.totalCost"), formatMoney(String(totalCostTwd.toFixed(0)), "TWD", { decimals: 0 })));
   summaryHost.appendChild(metricCard(
     t("metric.marketValue"),
-    formatMoney(String(totalMarketTwd.toFixed(0)), "TWD", { decimals: 0 }),
-    {
-      value: formatPercent(String(unrealizedPct.toFixed(2))) + " ▲",
-      direction: unrealizedPct >= 0 ? "up" : "down",
-    },
-    unrealizedPct >= 0 ? "positive" : "negative",
+    formatMoney(String(totalMarketTwd.toFixed(0)), "TWD", { decimals: 0 })
   ));
   summaryHost.appendChild(metricCard(
-    t("metric.dividendYield"),
-    portfolioYield !== null ? formatPercent(portfolioYield.toFixed(2)) : "—",
-    portfolioYield !== null ? { value: formatMoney(String(Math.round(totalTtmDividend)), "TWD", { decimals: 0 }), direction: "flat" } : { value: "—", direction: "flat" },
+    t("metric.unrealizedPnl"),
+    Number.isFinite(totalUnrealizedTwd) ? formatMoney(String(Math.round(totalUnrealizedTwd)), "TWD", { signed: true }) : "—",
+    {
+      value: formatPercent(String(unrealizedPct.toFixed(2))) + (totalUnrealizedTwd >= 0 ? " ▲" : " ▼"),
+      direction: totalUnrealizedTwd >= 0 ? "up" : "down",
+    },
+    totalUnrealizedTwd > 0 ? "positive" : totalUnrealizedTwd < 0 ? "negative" : "neutral",
   ));
 
   // Build table
@@ -124,10 +126,7 @@ export async function mountHoldings(root) {
         {
           key: "symbol", header: t("hold.col.symbol"), sortable: true,
           cell: (row) => `<strong>${escapeHtml(row.symbol)}</strong> ${escapeHtml(row.name)}
-            <div class="chip" style="margin-left: var(--space-1);">${escapeHtml(row.currency)}</div>
-            <div style="font-size: var(--text-xs); color: var(--color-text-muted); margin-top: 2px;">
-              ${changePct(row)}
-            </div>`,
+            <div class="chip" style="margin-left: var(--space-1);">${escapeHtml(row.currency)}</div>`,
         },
         {
           key: "account", header: t("hold.col.account"),
@@ -143,23 +142,7 @@ export async function mountHoldings(root) {
         },
         {
           key: "price", header: t("hold.col.price"), numeric: true, align: "right",
-          cell: (row) => {
-            const curr = Number(row.current_price);
-            const prev = Number(row.prev_close);
-            const pctCell = (Number.isFinite(curr) && Number.isFinite(prev) && curr > 0 && prev > 0)
-              ? (() => {
-                  // Numerator stays as today's move; denominator is the
-                  // current price ("of every dollar I hold, this much moved").
-                  const pct = ((curr - prev) / curr) * 100;
-                  const cls = pct >= 0 ? "value-positive" : "value-negative";
-                  const arrow = pct >= 0 ? " ▲" : " ▼";
-                  return `<span class="${cls}" style="font-size: var(--text-xs);">${formatPercent(pct.toFixed(2))}${arrow}</span>`;
-                })()
-              : "—";
-            return `<span class="num">${formatMoney(row.current_price, row.currency)}</span>
-              <div style="font-size: var(--text-xs);">${pctCell}</div>
-              <div style="font-size: var(--text-xs); color: var(--color-text-muted);">${formatDate(row.price_date)}</div>`;
-          },
+          cell: (row) => `<span class="num">${formatMoney(row.current_price, row.currency)}</span>`,
         },
         {
           key: "marketValue", header: t("hold.col.marketValue"), numeric: true, align: "right",
@@ -173,15 +156,16 @@ export async function mountHoldings(root) {
         {
           key: "unrealizedPnl", header: t("hold.col.unrealizedPnl"), numeric: true, align: "right",
           cell: (row) => {
-            const orig = (Number(row.current_price) - Number(row.avg_cost)) * Number(row.qty);
-            const twd = orig * Number(row.fx_rate);
+            const fx = Number(row.fx_rate || 1);
+            const profit = (Number(row.current_price) - Number(row.avg_cost)) * Number(row.qty) * fx;
             const pct = Number(row.avg_cost) > 0
               ? ((Number(row.current_price) - Number(row.avg_cost)) / Number(row.avg_cost)) * 100
               : 0;
-            const cls = twd > 0 ? "value-positive" : twd < 0 ? "value-negative" : "";
-            const arrow = twd > 0 ? " ▲" : twd < 0 ? " ▼" : " ─";
+            if (!Number.isFinite(profit)) return "—";
+            const cls = profit > 0 ? "value-positive" : profit < 0 ? "value-negative" : "";
+            const arrow = profit > 0 ? " ▲" : profit < 0 ? " ▼" : " ─";
             return `
-              <div class="${cls} num">${formatMoney(String(Math.round(twd)), "TWD", { signed: true })}${arrow}</div>
+              <div class="${cls} num">${formatMoney(String(Math.round(profit)), "TWD", { signed: true })}${arrow}</div>
               <div style="font-size: var(--text-xs); color: var(--color-text-muted);">${formatPercent(String(pct.toFixed(2)))}</div>
             `;
           },
@@ -194,7 +178,7 @@ export async function mountHoldings(root) {
     tableHost.appendChild(table.el);
   }
 
-  buildTable("unrealizedPnl_desc");
+  buildTable("symbol_asc");
   header.querySelector("[data-sort]").addEventListener("change", (e) => buildTable(e.target.value));
 
   header.querySelector("[data-action=refresh]").addEventListener("click", async () => {
@@ -205,15 +189,6 @@ export async function mountHoldings(root) {
       console.error(e);
     }
   });
-}
-
-function changePct(row) {
-  const a = Number(row.avg_cost), b = Number(row.current_price);
-  if (!a) return "—";
-  const pct = ((b - a) / a) * 100;
-  const cls = pct >= 0 ? "value-positive" : "value-negative";
-  const arrow = pct >= 0 ? " ▲" : " ▼";
-  return `<span class="${cls}" style="font-size: var(--text-xs);">${formatPercent(String(pct.toFixed(2)))}${arrow}</span>`;
 }
 
 function nameOf(list, id) { return list.find(x => x.id === id)?.name ?? "—"; }
