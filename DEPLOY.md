@@ -61,22 +61,68 @@ bash scripts/package.sh            # 產出 zip
 
 ## 3. 遠端解壓與部署
 
+### ⚠️ 使用者資料路徑（不可覆蓋）
+
+`rsync --delete` 會砍掉 dest 有但 source 沒有的檔案。下列檔案**不在 zip 內**，若不保護就會被刪光：
+
+| 路徑 | 內容 | 在 zip? |
+|---|---|---|
+| `${RUNTIME_DIR}/stock_hold.sqlite` | **主資料庫**（帳號 / 交易 / 持倉 / 報表） | ❌ gitignored |
+| `${RUNTIME_DIR}/stock_hold.sqlite-wal` | SQLite WAL journal | ❌ |
+| `${RUNTIME_DIR}/stock_hold.sqlite-shm` | SQLite shared-memory | ❌ |
+| `${RUNTIME_DIR}/backup/stock_hold_*.sqlite` | `php cli/backup.php` 產出的備份 | ❌ |
+| `${RUNTIME_DIR}/*.log` | 應用 logs | ❌ |
+| `${WEBROOT}/.env` | 若使用者把 `.env` 放在 webroot | ❌ |
+
+`runtime_dir()` 預設 fallback 是 `<repo>/runtime/`——**預設在 webroot 內**。
+部署前請決定走 3A 或 3B 路徑。
+
+### 3A. 推薦：runtime 在 webroot 外（無腦安全）
+
+適用：`STOCK_HOLD_RUNTIME_DIR` 已指向 `${WEBROOT}` 以外（§6.2、§6.3）。
+
 ```bash
-# 在遠端主機（SSH 進 web 伺服器）
 cd ~
 unzip stock_hold_deploy.zip -d stock_hold_staging
 
-# (可選) 比對內容
+# (可選) dry run 比對
 rsync -avn --delete stock_hold_staging/ ${DEPLOY_WEBROOT}/
 
-# 部署前先備份舊版（建議）
+# 部署前備份舊版
 mv ${DEPLOY_WEBROOT} ${DEPLOY_WEBROOT}.bak.$(date +%Y%m%d-%H%M)
 
 # 正式部署
 rsync -av --delete stock_hold_staging/ ${DEPLOY_WEBROOT}/
+# ${RUNTIME_DIR} 不在 ${DEPLOY_WEBROOT} 內 → rsync 不會碰到 → 安全
 ```
 
-> `--delete` 確保移除舊版殘留檔。
+### 3B. 若 runtime 還在 webroot 內（必須明確排除）
+
+適用：剛裝起來、`STOCK_HOLD_RUNTIME_DIR` 未設；或歷史遺留。
+
+```bash
+cd ~
+unzip stock_hold_deploy.zip -d stock_hold_staging
+
+# (a) 先備份使用者資料（出事還有救）
+tar czf stock_hold_data.bak.$(date +%Y%m%d-%H%M).tgz \
+    -C ${DEPLOY_WEBROOT} runtime .env 2>/dev/null
+
+# (b) 備份舊版
+mv ${DEPLOY_WEBROOT} ${DEPLOY_WEBROOT}.bak.$(date +%Y%m%d-%H%M)
+
+# (c) 正式部署：明確排除使用者資料路徑
+rsync -av --delete \
+    --exclude='runtime/' \
+    --exclude='.env' \
+    --exclude='*.log' \
+    stock_hold_staging/ ${DEPLOY_WEBROOT}/
+```
+
+> `--exclude='runtime/'` 同時覆蓋 SQLite 主檔、WAL、SHM 與 `backup/` 子目錄。
+> 若 webroot 還有其他使用者產物（自簽 SSL、客製 `.htaccess`、cron secret 等），也加 `--exclude`。
+> **3B 部署完建議改走 3A**：把 runtime 搬到 webroot 外並設 `STOCK_HOLD_RUNTIME_DIR`。
+
 > `${DEPLOY_WEBROOT}` 視你的 web server 而定（LiteSpeed / Apache / Nginx 公用 root、
 > Plesk 的 `httpdocs/`、cPanel 的 `public_html/` 等）；本機自訂。
 
@@ -133,14 +179,15 @@ ls -ld ${DEPLOY_RUNTIME}
 pdo_sqlite  json  curl  mbstring  openssl
 ```
 
-### 6.2 runtime 目錄（建議放 `${DEPLOY_WEBROOT}` 外）
+### 6.2 runtime 目錄（**強烈建議放 `${DEPLOY_WEBROOT}` 外**）
 
 ```bash
 mkdir -p ${DEPLOY_RUNTIME}
 chmod 750 ${DEPLOY_RUNTIME}
 ```
 
-`.htaccess` 已擋 `runtime/` 的 HTTP 存取，但放外面更穩。
+`.htaccess` 已擋 `runtime/` 的 HTTP 存取，但放外面**還能讓 `rsync --delete` 無腦安全**——
+詳見 §3A。若 runtime 留在 webroot 內，必須走 §3B 並明確 `--exclude='runtime/'`。
 
 ### 6.3 環境變數（web server VirtualHost / config / `~/.env`）
 
