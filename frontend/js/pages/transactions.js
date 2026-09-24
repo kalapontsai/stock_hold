@@ -56,13 +56,13 @@ export async function mountTransactions(root) {
     <div class="filter-bar__group">
       <label class="filter-bar__label" for="txn-filter-account">${t("txn.filter.account")}</label>
       <select id="txn-filter-account" class="select" data-filter="account" style="width:auto;min-width:140px;height:32px">
-        <option value="">${t("filter.range.thisYear") /* placeholder: all */} 全部</option>
+        <option value="">${t("filter.all")}</option>
       </select>
     </div>
     <div class="filter-bar__group">
       <label class="filter-bar__label" for="txn-filter-type">${t("txn.filter.type")}</label>
       <select id="txn-filter-type" class="select" data-filter="type" style="width:auto;min-width:120px;height:32px">
-        <option value="">全部</option>
+        <option value="">${t("filter.all")}</option>
       </select>
     </div>
     <div class="filter-bar__group" style="flex:1;min-width:160px">
