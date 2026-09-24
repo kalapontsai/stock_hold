@@ -35,16 +35,17 @@ fi
 git archive HEAD | tar -x -C "$WORK"
 
 # Inject VERSION.txt
+#   Only safe fields are recorded. Commit subject / author email / hostname /
+#   repo root are intentionally omitted so that the deployed artifact does not
+#   leak infrastructure information even if the zip is exfiltrated or pushed.
 {
   echo "Stock Hold Deploy Bundle"
   echo "========================"
   echo "Commit:    $(git rev-parse HEAD)"
+  echo "Short:     $(git rev-parse --short HEAD)"
   echo "Branch:    $(git rev-parse --abbrev-ref HEAD)"
-  echo "Subject:   $(git log -1 --pretty=%s)"
-  echo "Author:    $(git log -1 --pretty='%an <%ae>')"
   echo "Built at:  $(date -u +%Y-%m-%dT%H:%M:%SZ) ($(date +%Z))"
-  echo "Host:      $(hostname)"
-  echo "Repo root: $REPO_ROOT"
+  echo "Built by:  ${BUILD_USER:-${SUDO_USER:-${USER:-unknown}}}"
 } > "$WORK/VERSION.txt"
 
 # Zip deterministically (sorted) via python3 (zip/unzip not required)
