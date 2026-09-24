@@ -145,7 +145,10 @@ async function request(method, path, body, opts = {}) {
   if (!envelope || typeof envelope !== "object") {
     throw new ApiError("BAD_RESPONSE", `Non-JSON response from ${url}`, null, res.status);
   }
-  if (res.status === 401 && !path.startsWith("/auth/")) {
+  // A protected profile check is the auth gate for every business page.
+  // Login/register 401 responses must remain on the login form so the user
+  // can see the validation error instead of being redirected in a loop.
+  if (res.status === 401 && (path === "/auth/me" || !path.startsWith("/auth/"))) {
     csrfToken = null;
     window.dispatchEvent(new CustomEvent("stock-hold:unauthorized"));
   }
