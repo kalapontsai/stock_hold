@@ -26,7 +26,7 @@ export async function mountHoldings(root) {
           <select class="select" data-sort style="height:32px; width:auto;">
             <option value="unrealizedPnl_desc">${t("hold.sortBy.unrealizedPnl")} ▼</option>
             <option value="marketValue_desc">${t("hold.sortBy.marketValue")} ▼</option>
-            <option value="symbol_asc">${t("hold.sortBy.symbol")}</option>
+            <option value="symbol_asc" selected>${t("hold.sortBy.symbol")}</option>
           </select>
         </label>
         <button type="button" class="btn btn--secondary" data-action="refresh">
