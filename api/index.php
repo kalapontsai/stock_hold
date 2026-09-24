@@ -335,7 +335,9 @@ function fetch_twse_mis_quotes(PDO $pdo, array $securities): array
     $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_FOLLOWLOCATION => true,
+        // F-08 fix: drop CURLOPT_FOLLOWLOCATION to eliminate SSRF surface.
+        // The TWSE endpoint is hard-coded and has never redirected; if a
+        // future TWSE redirect is needed, switch to an explicit allow-list.
         CURLOPT_CONNECTTIMEOUT => 5,
         CURLOPT_TIMEOUT => 15,
         CURLOPT_HTTPHEADER => ['Accept: application/json', 'User-Agent: stock_hold/2.0'],

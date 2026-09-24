@@ -100,6 +100,10 @@ function security_headers(): void
     header('X-Frame-Options: DENY');
     header('Referrer-Policy: strict-origin-when-cross-origin');
     header("Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'");
+    // F-05 fix: HSTS so browsers refuse to downgrade HTTP→HTTPS after first
+    // visit. 2 years + includeSubDomains + preload — operator must register
+    // the domain at hstspreload.org to actually push to the browser list.
+    header('Strict-Transport-Security: max-age=63072000; includeSubDomains; preload');
 }
 
 function request_id(): string
@@ -166,7 +170,15 @@ function start_session(): void
     if (session_status() === PHP_SESSION_ACTIVE) {
         return;
     }
+    // F-09 fix: prefer Cloudflare's CF-Visitor (JSON, hard to spoof) over
+    // X-Forwarded-Proto (plain header, attacker can set when hitting origin
+    // directly). Fall back to direct HTTPS detection for non-CF deployments.
+    // X-Forwarded-Proto retained as a last resort for non-Cloudflare reverse
+    // proxies — operators behind such proxies MUST strip client-supplied
+    // X-Forwarded-Proto at the edge.
+    $cfVisitor = (string)($_SERVER['HTTP_CF_VISITOR'] ?? '');
     $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+        || str_contains($cfVisitor, '"scheme":"https"')
         || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
     session_set_cookie_params([
         'httponly' => true,
