@@ -8,9 +8,12 @@
   <link rel="stylesheet" href="./css/base.css">
   <link rel="stylesheet" href="./css/layout.css">
   <link rel="stylesheet" href="./css/components.css">
-  <!-- F-12: Cloudflare Turnstile widget (managed mode = runs invisibly). -->
-  <!-- If data-sitekey is empty (dev mode), the widget renders as nothing. -->
-  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onTurnstileLoad" async defer></script>
+  <!-- F-12: Cloudflare Turnstile widget. {{TURNSTILE_SITEKEY}} is substituted -->
+  <!-- at build time by scripts/package.sh from the STOCK_HOLD_TURNSTILE_SITEKEY -->
+  <!-- env var. If left empty (dev mode), widget renders inert; backend -->
+  <!-- verify_turnstile() also skips check when STOCK_HOLD_TURNSTILE_SECRET -->
+  <!-- is empty. Visible mode: user explicitly checks the CAPTCHA box. -->
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 </head>
 <body>
   <script>
@@ -18,7 +21,6 @@
     // submitting login/register. Updated by the widget's data-callback.
     window.__turnstileToken = '';
     window.onTurnstileSuccess = function (token) { window.__turnstileToken = token; };
-    window.onTurnstileLoad = function () { /* no-op; widget renders automatically */ };
   </script>
   <main class="auth-page">
     <section class="modal-card auth-card" aria-labelledby="auth-title">
@@ -34,8 +36,8 @@
         <label class="form-field" data-register-only hidden>Email<input name="email" type="email" autocomplete="email"></label>
         <label class="form-field">密碼<input name="password" type="password" autocomplete="current-password" required></label>
         <label class="form-field" data-register-only hidden>確認密碼<input name="password_confirm" type="password" autocomplete="new-password"></label>
-        <!-- F-12: Turnstile widget — leave data-sitekey empty in dev, set in prod -->
-        <div class="cf-turnstile" data-sitekey="" data-callback="onTurnstileSuccess"></div>
+        <!-- F-12: Turnstile widget — sitekey substituted at build time by scripts/package.sh -->
+        <div class="cf-turnstile" data-sitekey="{{TURNSTILE_SITEKEY}}" data-callback="onTurnstileSuccess"></div>
         <p id="auth-message" class="form-error" role="alert" hidden></p>
         <button class="btn btn--primary" type="submit" id="auth-submit">登入</button>
       </form>

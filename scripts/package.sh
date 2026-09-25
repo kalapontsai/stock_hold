@@ -37,6 +37,17 @@ fi
 git archive HEAD | tar -x -C "$WORK"
 rm -rf "$WORK/scripts"
 
+# F-12.2: bake the Turnstile sitekey into frontend/login.html at build time.
+# This avoids runtime complexity (no /api/v1/config endpoint, no dynamic
+# fetch JS). The placeholder {{TURNSTILE_SITEKEY}} is left as-is in git and
+# substituted here. Dev mode: STOCK_HOLD_TURNSTILE_SITEKEY unset → widget
+# renders inert, backend verify_turnstile() also skips check when SECRET
+# is empty (see api/bootstrap.php).
+: "${STOCK_HOLD_TURNSTILE_SITEKEY:=}"
+if [ -n "$STOCK_HOLD_TURNSTILE_SITEKEY" ]; then
+    sed -i "s|{{TURNSTILE_SITEKEY}}|$STOCK_HOLD_TURNSTILE_SITEKEY|g" "$WORK/frontend/login.html"
+fi
+
 # Inject VERSION.txt
 #   Only safe fields are recorded. Commit subject / author email / hostname /
 #   repo root are intentionally omitted so that the deployed artifact does not
