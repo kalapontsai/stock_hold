@@ -44,6 +44,46 @@ rm -rf "$WORK/scripts"
 # renders inert, backend verify_turnstile() also skips check when SECRET
 # is empty (see api/bootstrap.php).
 : "${STOCK_HOLD_TURNSTILE_SITEKEY:=}"
+
+# F-XX fix: pull the Turnstile sitekey from operator-managed .env files
+# (NOT .env.example, which is public and tracked in git) when the var
+# is not passed on the command line. Lets `bash scripts/package.sh`
+# work without exposing the key in shell history / log output / redacted
+# transcripts. Refuses well-known placeholders so a stray .env copy of
+# .env.example can never sneak through into deploy/login.html.
+for _sh_envfile in "$REPO_ROOT/.env" "$HOME/.env"; do
+    if [ -z "${STOCK_HOLD_TURNSTILE_SITEKEY:-}" ] && [ -r "$_sh_envfile" ]; then
+        _sh_line=$(grep -E "^STOCK_HOLD_TURNSTILE_SITEKEY=" "$_sh_envfile" 2>/dev/null | head -1 || true)
+        if [ -n "$_sh_line" ]; then
+            # Cut on first =, then strip surrounding quotes / whitespace.
+            # tr avoids the nested-quote foot-gun that inline sed hits.
+            _sh_val=$(printf "%s" "$_sh_line" | cut -d= -f2- | tr -d \"\047 | tr -d "[:space:]")
+            if [ -n "$_sh_val" ]; then
+                STOCK_HOLD_TURNSTILE_SITEKEY="$_sh_val"
+                break
+            fi
+        fi
+    fi
+done
+
+# F-XX fix: refuse well-known placeholder strings so a stray .env that
+# looks like .env.example cannot bake a publicly-known value into the
+# deploy. Update this case statement when .env.example placeholder
+# list changes. "replacXoken" pattern catches both ASCII and unicode-ellipsis
+# variants from .env.example history (e.g. "replac...oken", "replacXoken").
+case "$STOCK_HOLD_TURNSTILE_SITEKEY" in
+    "***")
+        echo "ERROR: STOCK_HOLD_TURNSTILE_SITEKEY is a literal \"***\"; refusing to bake it." >&2
+        echo "       Set it as an env var or in $REPO_ROOT/.env with a real Turnstile sitekey." >&2
+        exit 1
+        ;;
+    "replace-with-a-long-random-token"|"replace-with-long-random-token"|"replace-with-openssl-rand-hex-32-output"|"replac"*"oken"|"changeme"|"your-token-here"|"your-secret-token-here"|"your_api_token"|"<your-token>"|"<token>"|"TODO"|"FIXME"|"xxx")
+        echo "ERROR: STOCK_HOLD_TURNSTILE_SITEKEY looks like a placeholder; refusing to bake it." >&2
+        echo "       Set it as an env var or in $REPO_ROOT/.env with a real Turnstile sitekey." >&2
+        exit 1
+        ;;
+esac
+
 if [ -n "$STOCK_HOLD_TURNSTILE_SITEKEY" ]; then
     sed -i "s|{{TURNSTILE_SITEKEY}}|$STOCK_HOLD_TURNSTILE_SITEKEY|g" "$WORK/frontend/login.html"
 fi
