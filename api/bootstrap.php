@@ -101,9 +101,17 @@ function security_headers(): void
     header('Referrer-Policy: strict-origin-when-cross-origin');
     // F-12 fix: Turnstile integration needs three extra origins. Without these,
     // the CSP would silently block the Turnstile widget script, iframe, and
-    // the (already server-side) siteverify call. Keep the source list tight —
-    // challenges.cloudflare.com is the only third-party origin allowed.
-    header("Content-Security-Policy: default-src 'self'; script-src 'self' https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://challenges.cloudflare.com; frame-src 'self' https://challenges.cloudflare.com");
+    // the (already server-side) siteverify call.
+    //
+    // F-12.3 fix: Cloudflare Web Analytics (zone-level RUM) injects its
+    // beacon script as <script src="https://static.cloudflareinsights.com/
+    // beacon.min.js/..."> and POSTs samples to <zone>.insights.cloudflare.com.
+    // Both are blocked without these additions.
+    //
+    // Third-party origins are kept tight: only Cloudflare infrastructure
+    // (challenges.cloudflare.com for Turnstile, static.cloudflareinsights.com
+    // + *.insights.cloudflare.com for Web Analytics).
+    header("Content-Security-Policy: default-src 'self'; script-src 'self' https://challenges.cloudflare.com https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://challenges.cloudflare.com https://*.insights.cloudflare.com; frame-src 'self' https://challenges.cloudflare.com");
     // F-05 fix: HSTS so browsers refuse to downgrade HTTP→HTTPS after first
     // visit. 2 years + includeSubDomains + preload — operator must register
     // the domain at hstspreload.org to actually push to the browser list.
