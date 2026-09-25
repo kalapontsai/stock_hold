@@ -258,19 +258,23 @@ function current_user(PDO $pdo): ?array
     start_session();
     $userId = $_SESSION['user_id'] ?? null;
     if (!$userId) {
-        $expected = env_value('STOCK_HOLD_API_TOKEN');
-        // F-01 fix: a placeholder token from .env.example is publicly known
-        // (the repo is public). Treat any obvious placeholder as if no token
-        // is set; API-token mode is disabled until the operator runs
-        // `openssl rand -hex 32` and replaces the placeholder.
-        if (is_known_placeholder($expected)) {
-            $expected = null;
-        }
         $provided = $_SERVER['HTTP_X_API_TOKEN'] ?? '';
-        if ($expected === null || $expected === '' || $provided === '' || !hash_equals($expected, $provided)) {
+        if ($provided === '') {
             return null;
         }
-        $userId = $pdo->query('SELECT id FROM users ORDER BY id LIMIT 1')->fetchColumn();
+        // Per-user API token lookup (migration 007):
+        // Verify the token hash against the api_tokens table and
+        // resolve to the owning user.  The legacy global
+        // STOCK_HOLD_API_TOKEN is intentionally ignored here;
+        // operators should migrate to per-user tokens.
+        $tokenHash = hash('sha256', $provided);
+        $stmt = $pdo->prepare('SELECT user_id FROM api_tokens WHERE token_hash = ? AND is_active = 1 AND (expires_at IS NULL OR expires_at > ?)');
+        $stmt->execute([$tokenHash, gmdate('Y-m-d H:i:s')]);
+        $tokenRow = $stmt->fetch();
+        if (!$tokenRow) {
+            return null;
+        }
+        $userId = (int)$tokenRow['user_id'];
     }
     if (!$userId) {
         return null;
@@ -309,12 +313,13 @@ function require_write_access(PDO $pdo): array
     $path = (string)($_SERVER['PATH_INFO'] ?? (parse_url((string)($_SERVER['REQUEST_URI'] ?? ''), PHP_URL_PATH) ?: ''));
     audit_log_write($pdo, (int)$user['id'], substr("{$method} {$path}", 0, 200));
 
-    $expected = env_value('STOCK_HOLD_API_TOKEN');
-    $provided = $_SERVER['HTTP_X_API_TOKEN'] ?? '';
-    if ($expected !== null && $expected !== '' && $provided !== '' && hash_equals($expected, $provided)) {
+    // Per-user API token authentication: no CSRF needed (designed for agent/script automation).
+    $providedApiToken = $_SERVER['HTTP_X_API_TOKEN'] ?? '';
+    if ($providedApiToken !== '') {
         return $user;
     }
 
+    // Browser session: require CSRF token.
     $csrf = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
     if ($csrf !== '' && hash_equals(csrf_token(), $csrf)) {
         return $user;

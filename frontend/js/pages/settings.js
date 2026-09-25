@@ -124,43 +124,95 @@ export async function mountSettings(root) {
   skillsHost.appendChild(buildSkillsTable(skills));
   sections.appendChild(skillsSection);
 
-  // ───────── 4. API Token ─────────
+  // ──────── 4. Per-User API Tokens ────────
   const tokenSection = section(t("set.sec.token"), "token");
-  tokenSection.querySelector("[data-host]").innerHTML = `
-    <p style="margin-bottom: var(--space-3); color: var(--color-text-muted); font-size: var(--text-sm);">${t("set.token.label")}</p>
-    <div class="input-group" style="max-width: 420px;">
-      <input type="password" class="input" value="•••••••••••••••••••••••" readonly id="api-token-input">
-      <button type="button" class="btn btn--ghost btn--sm" style="position:absolute; right: 8px; top: 4px;" id="api-token-show">${t("action.show")}</button>
-    </div>
-    <div style="margin-top: var(--space-3); font-size: var(--text-sm); color: var(--color-text-muted);">
-      ${t("set.token.permission", { perm: "agent" })} · ${t("set.token.ipRestriction", { ip: "127.0.0.1 / ::1" })}
-    </div>
-    <div style="margin-top: var(--space-4);">
-      <button type="button" class="btn btn--danger" data-action="regenerate">${t("action.regenerate")}</button>
-    </div>
-  `;
-  const tokenInput = tokenSection.querySelector("#api-token-input");
-  tokenSection.querySelector("#api-token-show").addEventListener("click", () => {
-    if (tokenInput.type === "password") {
-      tokenInput.type = "text";
-      tokenInput.value = "sk_stock_hold_" + Math.random().toString(36).slice(2, 18);
-      tokenSection.querySelector("#api-token-show").textContent = t("action.hide");
-    } else {
-      tokenInput.type = "password";
-      tokenInput.value = "•••••••••••••••••••••••";
-      tokenSection.querySelector("#api-token-show").textContent = t("action.show");
+  const tokenHost = tokenSection.querySelector("[data-host]");
+  tokenHost.innerHTML = '<p class="form-field__hint">' + t("set.token.label") + ' · 每個 token 僅級定你的帳號，用於外部整合（agent、CLI、腳本等）。可以同時管理多個，撥銷一個不影響其他。</p><div data-token-list></div>';
+
+  async function loadTokens() {
+    try {
+      const data = await api.apiTokens.list();
+      const tokens = data.items || data;
+      if (!tokens.length) {
+        tokenHost.querySelector("[data-token-list]").innerHTML = '<p class="form-field__hint">尚無 API token；請點「建立新 token」以生成。</p>';
+        return;
+      }
+      tokenHost.querySelector("[data-token-list]").innerHTML =
+        '<table class="table"><thead><tr><th>Token</th><th>用途</th><th>建立時間</th><th>狀態</th><th></th></tr></thead><tbody>' +
+        tokens.map(function(token) {
+          return '<tr>' +
+            '<td><code>' + escapeHtml(token.token_prefix) + '…</code></td>' +
+            '<td>' + escapeHtml(token.purpose || '—') + '</td>' +
+            '<td>' + escapeHtml(formatDateTime(token.created_at)) + '</td>' +
+            '<td><span class="badge ' + (token.is_active ? 'badge--positive' : 'badge--neutral') + '">' + (token.is_active ? '啟用' : '已撥銷') + '</span></td>' +
+            '<td><button type="button" class="btn btn--ghost btn--sm" data-revoke="' + token.id + '"' + (!token.is_active ? ' disabled' : '') + '>' + t("action.revoke") + '</button></td>' +
+            '</tr>';
+        }).join('') +
+        '</tbody></table>';
+    } catch (e) {
+      tokenHost.querySelector("[data-token-list]").innerHTML = '<p class="form-field__hint" style="color:var(--color-error)">' + escapeHtml(e.message) + '</p>';
     }
-  });
-  tokenSection.querySelector("[data-action=regenerate]").addEventListener("click", async () => {
+  }
+
+  tokenHost.querySelector("[data-token-list]").addEventListener("click", async function(e) {
+    const btn = e.target.closest("[data-revoke]");
+    if (!btn) return;
+    const id = parseInt(btn.dataset.revoke, 10);
     const ok = await confirmDialog({
-      title: t("action.regenerate"),
-      body: "重新產生後舊 token 將立即失效，外部呼叫會失敗。確定繼續？",
+      title: t("action.revoke"),
+      body: "撥銷後此 token 將無法再存取 API，確定？",
       confirmLabel: t("action.confirm"),
-      confirmTone: "danger",
+      confirmTone: "danger"
     });
     if (!ok) return;
-    toast("瀏覽器顯示用 token 已重新產生；正式 token 請由伺服器環境設定。", { tone: "success" });
+    try {
+      await api.apiTokens.revoke(id);
+      toast("已撥銷", { tone: "success" });
+      await loadTokens();
+    } catch (e) {
+      toast(e.message, { tone: "error" });
+    }
   });
+
+  const createBtn = document.createElement("button");
+  createBtn.type = "button";
+  createBtn.className = "btn btn--primary btn--sm";
+  createBtn.style.marginTop = "var(--space-3)";
+  createBtn.textContent = "建立新 token";
+  createBtn.addEventListener("click", async function() {
+    const purpose = (prompt("請輸入 token 用途（選填）") || "").trim();
+    try {
+      const result = await api.apiTokens.create(purpose);
+      const m = createModal({ title: "請立即儲存 token", size: "sm" });
+      m.body.innerHTML =
+        '<p>以下 token 僅此顯示一次，關閉後將無法再查看。</p>' +
+        '<input class="input" readonly value="' + escapeHtml(result.token) + '" id="new-token-input" />' +
+        '<p class="form-field__hint">請儲存在安全地方（例如密碼管理器）。記錄位置：<code>' + escapeHtml(result.token_prefix) + '…</code></p>';
+      const input = m.body.querySelector("#new-token-input");
+      input.select();
+      const copyBtn = document.createElement("button");
+      copyBtn.type = "button";
+      copyBtn.className = "btn btn--primary";
+      copyBtn.textContent = t("action.copy");
+      copyBtn.addEventListener("click", function() {
+        navigator.clipboard.writeText(result.token);
+        toast("已複製", { tone: "success" });
+      });
+      const closeBtn = document.createElement("button");
+      closeBtn.type = "button";
+      closeBtn.className = "btn btn--secondary";
+      closeBtn.textContent = t("action.close");
+      closeBtn.addEventListener("click", function() { m.close(); });
+      m.footer.appendChild(copyBtn);
+      m.footer.appendChild(closeBtn);
+      m.show();
+      await loadTokens();
+    } catch (e) {
+      toast(e.message, { tone: "error" });
+    }
+  });
+  tokenHost.appendChild(createBtn);
+  await loadTokens();
   sections.appendChild(tokenSection);
 
   // ───────── 5. Quote updates ─────────

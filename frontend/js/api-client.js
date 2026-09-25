@@ -332,6 +332,13 @@ export const skills = {
   toggle:  (name, body) => request("POST", `/skills/${name}/toggle`, body),
 };
 
+/* API Token management */
+export const apiTokens = {
+  list:     () => request("GET", "/api-tokens/me").then(listItems),
+  create:   (purpose) => request("POST", "/api-tokens/create", { purpose }),
+  revoke:   (id) => request("POST", "/api-tokens/revoke", { id }),
+};
+
 /* Schema introspection (Agent use) */
 export const schema = {
   get:      () => request("GET", "/schema"),

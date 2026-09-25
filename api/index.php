@@ -195,6 +195,54 @@ if ($method === 'POST' && $path === '/auth/profile') {
     envelope_ok($get->fetch());
 }
 
+if ($method === 'GET' && $path === '/api-tokens/me') {
+    $currentUser = require_authenticated_user($pdo);
+    $stmt = $pdo->prepare('SELECT id, token_prefix, purpose, is_active, created_at, expires_at, last_used_at FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC');
+    $stmt->execute([$currentUser['id']]);
+    envelope_ok(list_data($stmt->fetchAll()));
+}
+
+if ($method === 'POST' && $path === '/api-tokens/create') {
+    $currentUser = require_write_access($pdo);
+    $input = body_json();
+    $purpose = trim((string)($input['purpose'] ?? ''));
+    if ($purpose === '') {
+        $purpose = 'api-token-' . date('Ymd-His');
+    }
+    if (strlen($purpose) > 120) {
+        envelope_error('VALIDATION_ERROR', 'Purpose is too long (max 120 chars).', 422);
+    }
+    // Generate token: 64 hex chars (32 bytes)
+    $rawToken = bin2hex(random_bytes(32));
+    $tokenHash = hash('sha256', $rawToken);
+    $tokenPrefix = substr($rawToken, 0, 8);
+    $now = now_sql();
+    $stmt = $pdo->prepare('INSERT INTO api_tokens (user_id, token_hash, token_prefix, purpose, is_active, created_at) VALUES (?, ?, ?, ?, 1, ?)');
+    $stmt->execute([$currentUser['id'], $tokenHash, $tokenPrefix, $purpose, $now]);
+    $tokenId = (int)$pdo->lastInsertId();
+    // Return the raw token ONLY ONCE - user must copy it now
+    envelope_ok([
+        'id' => $tokenId,
+        'token' => $rawToken,
+        'token_prefix' => $tokenPrefix,
+        'purpose' => $purpose,
+        'created_at' => $now,
+    ], 201);
+}
+
+if ($method === 'POST' && $path === '/api-tokens/revoke') {
+    $currentUser = require_write_access($pdo);
+    $input = body_json();
+    require_fields($input, ['id']);
+    $tokenId = (int)$input['id'];
+    $stmt = $pdo->prepare('DELETE FROM api_tokens WHERE id = ? AND user_id = ?');
+    $stmt->execute([$tokenId, $currentUser['id']]);
+    if ($stmt->rowCount() === 0) {
+        envelope_error('NOT_FOUND', 'Token not found.', 404);
+    }
+    envelope_ok(['id' => $tokenId, 'revoked' => true]);
+}
+
 if ($method !== 'GET') {
     $currentUser = require_write_access($pdo);
 } else {

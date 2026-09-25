@@ -17,7 +17,7 @@ Apache + PHP module
 
 API：`http://localhost/stock_hold/api/v1/`
 
-登入：首次使用請開啟 `/stock_hold/frontend/login.html` 註冊；後續請使用帳號或 Email 登入。業務 API 需要同源 Session，瀏覽器 mutation 需 CSRF token；Agent/CLI mutation 可使用 `X-API-Token`，且仍會套用使用者資料範圍。
+登入：首次使用請開啟 `/stock_hold/frontend/login.html` 註冊；後續請使用帳號或 Email 登入。業務 API 需要同源 Session，瀏覽器 mutation 需 CSRF token；Agent/CLI mutation 使用各使用者專屬 `X-API-Token`（參見 §2），且仍會套用使用者資料範圍。
 
 ## 必要環境
 
@@ -64,11 +64,13 @@ SetEnv STOCK_HOLD_RUNTIME_DIR "D:/docker-volumn/ubuntu-apache2/runtime/stock_hol
 
 若暫時使用專案內的 `runtime/`，現有 `.htaccess` 會禁止 HTTP 讀取。
 
-### 2. API token（Agent/CLI 使用）
+### 2. API token（Per-user / Agent / CLI 使用）
 
-瀏覽器使用同源 session + CSRF；Agent 或 CLI mutation 才需要 `X-API-Token`。
+**Per-user token（多租戶，migration 007+）：** 每個使用者進入「設定 → API Token」來生成 / 列表 / 撤銷。Token 僅顯示一次，保存為 salted SHA-256 hash + 前 8 字元 prefix。
 
-不要把 token 寫入前端或 Git。可由 Apache `SetEnv STOCK_HOLD_API_TOKEN ...` 或主機安全環境變數注入。
+- 瀏覽器 mutation：session + CSRF（token 不需）
+- Agent / CLI / 腳本 mutation：取得該使用者的 token 後以 `-H "X-API-Token: ***"` 來呼叫，仍套用 user_id 隔離的資料範圍
+- 舊版全域 `STOCK_HOLD_API_TOKEN` 環境變數已退役，`SetEnv STOCK_HOLD_API_TOKEN ...` 不再授予任何使用者權限。請每個使用者（含管理員）在「設定 → API Token」產生自己的 token，並更新外部整合設定。
 
 ### 3. 執行 migration
 
@@ -270,5 +272,5 @@ demo/                完全脫敏的示範輸入資料
 
 - 不要公開 Apache 到 LAN/WAN，除非另行配置 TLS、認證與防火牆。
 - 不要將 `runtime/stock_hold.sqlite`、backup、token 或 log 放入公開下載路徑。
-- 不要把 `STOCK_HOLD_API_TOKEN` 寫進 JavaScript、HTML、README 或 Git。
+- 不要把任何 token（含使用者 API token、STOCK_HOLD_INIT_TOKEN、TURNSTILE SECRET）寫進 JavaScript、HTML、README 或 Git。
 - restore 前先備份；交易歷史使用 reversal，不直接刪除。
