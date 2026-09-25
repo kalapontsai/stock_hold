@@ -32,6 +32,9 @@
   display: block;
 }
 
+/* Mobile (< 1024px): hide sidebar; desktop media query overrides */
+.app__sidebar { display: none; }
+
 /* Desktop layout (≥ 1024px) */
 @media (min-width: 1024px) {
   .app {
@@ -350,6 +353,12 @@
     grid-template-columns: 220px 1fr;
     align-items: start;
   }
+}
+
+/* Mobile (< 1024px): hide settings anchor card — user does not want the
+   1–8 item card overlaying the settings page on mobile. */
+@media (max-width: 1023px) {
+  .settings-anchor { display: none; }
 }
 
 .settings-anchor {
