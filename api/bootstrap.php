@@ -204,12 +204,68 @@ function public_registration_enabled(PDO $pdo, ?string $initToken = null): bool
     return validate_init_token((string)$initToken);
 }
 
+// F-01 fix: detect obvious placeholder values that operators might leave by
+// copying .env.example verbatim. The repo is public, so the literal placeholder
+// string in .env.example is publicly known. Without this check, an operator who
+// forgets to replace STOCK_HOLD_API_TOKEN before deploy leaves a publicly known
+// token that any reader of the repo can use.
+//
+// Matches:
+//   - Exact placeholder strings ever shipped in .env.example
+//   - Common patterns: replace / placeholder / changeme / your-token / *** /
+//     TODO / FIXME / <angled> / example
+function is_known_placeholder(?string $value): bool
+{
+    if (!is_string($value) || $value === '') {
+        return false;
+    }
+    $normalized = strtolower(trim($value));
+
+    // Exact-match placeholders shipped in .env.example history.
+    // Update this list when changing .env.example placeholder.
+    $exact = [
+        '***',
+        'replace-with-a-long-random-token',
+        'replace-with-long-random-token',
+        'replac…oken', // unicode ellipsis variant used in earlier .env.example
+        'replace-with-openssl-rand-hex-32-output',
+        'changeme',
+        'your-token-here',
+        'your-secret-token-here',
+        'your_api_token',
+        '<your-token>',
+        '<token>',
+        'todo',
+        'fixme',
+        'xxx',
+    ];
+    foreach ($exact as $e) {
+        if (strtolower(trim($e)) === $normalized) {
+            return true;
+        }
+    }
+
+    // Pattern-match common placeholder keywords. Word-boundary aware.
+    if (preg_match('/\b(replace|placeholder|change.?me|your.?token|your.?secret|example|TODO|FIXME|XXX|<.+?>)\b/i', $normalized)) {
+        return true;
+    }
+
+    return false;
+}
+
 function current_user(PDO $pdo): ?array
 {
     start_session();
     $userId = $_SESSION['user_id'] ?? null;
     if (!$userId) {
         $expected = env_value('STOCK_HOLD_API_TOKEN');
+        // F-01 fix: a placeholder token from .env.example is publicly known
+        // (the repo is public). Treat any obvious placeholder as if no token
+        // is set; API-token mode is disabled until the operator runs
+        // `openssl rand -hex 32` and replaces the placeholder.
+        if (is_known_placeholder($expected)) {
+            $expected = null;
+        }
         $provided = $_SERVER['HTTP_X_API_TOKEN'] ?? '';
         if ($expected === null || $expected === '' || $provided === '' || !hash_equals($expected, $provided)) {
             return null;
@@ -349,6 +405,12 @@ function check_write_rate_limit(PDO $pdo, int $userId): bool
 function validate_init_token(string $provided): bool
 {
     $expected = env_value('STOCK_HOLD_INIT_TOKEN');
+    // F-01 fix: a placeholder INIT_TOKEN from .env.example is publicly known.
+    // Reject obvious placeholders so first-user registration stays disabled
+    // until the operator runs `openssl rand -hex 32`.
+    if (is_known_placeholder($expected)) {
+        return false;
+    }
     if ($expected === null || $expected === '' || $provided === '') {
         return false;
     }
