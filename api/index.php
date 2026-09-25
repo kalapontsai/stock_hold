@@ -93,6 +93,10 @@ if ($method === 'POST' && $path === '/auth/login') {
     $input = body_json();
     require_fields($input, ['username', 'password']);
     $identity = trim((string)$input['username']);
+    // F-12 fix: Cloudflare Turnstile verification (skipped in dev mode).
+    if (!verify_turnstile((string)($input['turnstile_token'] ?? ''), client_ip())) {
+        envelope_error('TURNSTILE_FAILED', 'Security verification failed. Please complete the CAPTCHA and try again.', 403);
+    }
     $ipKey = rate_limit_key('ip', client_ip());
     $identityKey = rate_limit_key('account', $identity);
     if (is_rate_limited($pdo, $ipKey) || is_rate_limited($pdo, $identityKey)) {

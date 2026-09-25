@@ -469,6 +469,68 @@ function audit_log_write(PDO $pdo, int $userId, string $action, ?string $ip = nu
     }
 }
 
+// F-12 fix: verify a Cloudflare Turnstile token against the siteverify API.
+// Returns true if Turnstile is not configured (dev mode), true if the token
+// verifies successfully, false if the token is missing/invalid.
+//
+// Dev mode behavior: when STOCK_HOLD_TURNSTILE_SECRET is empty, the check is
+// skipped entirely. This makes local development possible without a Turnstile
+// key. Production MUST set both STOCK_HOLD_TURNSTILE_SITEKEY and SECRET.
+//
+// Security: HTTPS-only, no redirect following (F-08 fix), short timeouts so a
+// stalled Cloudflare call can't lock the auth flow.
+function verify_turnstile(string $token, ?string $remoteIp = null): bool
+{
+    $secret = env_value('STOCK_HOLD_TURNSTILE_SECRET');
+    $sitekey = env_value('STOCK_HOLD_TURNSTILE_SITEKEY');
+    // Dev mode: Turnstile not configured -> skip verification.
+    if (!is_string($secret) || $secret === '' || !is_string($sitekey) || $sitekey === '') {
+        return true;
+    }
+    // Production: token must be present.
+    if ($token === '') {
+        return false;
+    }
+
+    $postData = [
+        'secret' => $secret,
+        'response' => $token,
+    ];
+    if ($remoteIp !== null && $remoteIp !== '') {
+        $postData['remoteip'] = $remoteIp;
+    }
+
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL => 'https://challenges.cloudflare.com/turnstile/v0/siteverify',
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => http_build_query($postData),
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 5,
+        CURLOPT_CONNECTTIMEOUT => 3,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_FOLLOWLOCATION => false, // F-08 fix: never follow redirects
+        CURLOPT_PROTOCOLS => CURLPROTO_HTTPS,
+        CURLOPT_USERAGENT => 'stock_hold/2.0.0-apache (F-12 Turnstile verifier)',
+    ]);
+    $response = curl_exec($ch);
+    $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlErr = curl_errno($ch);
+    curl_close($ch);
+
+    if ($curlErr !== 0 || $httpCode !== 200 || !is_string($response) || $response === '') {
+        // Fail-closed: if we can't reach Cloudflare, reject. Operator will see
+        // this in error log and can decide whether to disable Turnstile.
+        return false;
+    }
+
+    $data = json_decode($response, true);
+    if (!is_array($data)) {
+        return false;
+    }
+    return ($data['success'] ?? false) === true;
+}
+
 function now_sql(): string
 {
     return gmdate('Y-m-d H:i:s');

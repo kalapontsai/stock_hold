@@ -8,8 +8,18 @@
   <link rel="stylesheet" href="./css/base.css">
   <link rel="stylesheet" href="./css/layout.css">
   <link rel="stylesheet" href="./css/components.css">
+  <!-- F-12: Cloudflare Turnstile widget (managed mode = runs invisibly). -->
+  <!-- If data-sitekey is empty (dev mode), the widget renders as nothing. -->
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onTurnstileLoad" async defer></script>
 </head>
 <body>
+  <script>
+    // F-12: Turnstile token store. auth.js reads window.__turnstileToken when
+    // submitting login/register. Updated by the widget's data-callback.
+    window.__turnstileToken = '';
+    window.onTurnstileSuccess = function (token) { window.__turnstileToken = token; };
+    window.onTurnstileLoad = function () { /* no-op; widget renders automatically */ };
+  </script>
   <main class="auth-page">
     <section class="modal-card auth-card" aria-labelledby="auth-title">
       <h1 id="auth-title">stock_hold</h1>
@@ -24,6 +34,8 @@
         <label class="form-field" data-register-only hidden>Email<input name="email" type="email" autocomplete="email"></label>
         <label class="form-field">密碼<input name="password" type="password" autocomplete="current-password" required></label>
         <label class="form-field" data-register-only hidden>確認密碼<input name="password_confirm" type="password" autocomplete="new-password"></label>
+        <!-- F-12: Turnstile widget — leave data-sitekey empty in dev, set in prod -->
+        <div class="cf-turnstile" data-sitekey="" data-callback="onTurnstileSuccess"></div>
         <p id="auth-message" class="form-error" role="alert" hidden></p>
         <button class="btn btn--primary" type="submit" id="auth-submit">登入</button>
       </form>

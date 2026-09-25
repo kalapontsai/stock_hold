@@ -24,13 +24,19 @@ form.addEventListener("submit", async (event) => {
   event.preventDefault();
   message.hidden = true;
   const data = Object.fromEntries(new FormData(form).entries());
+  // F-12: capture Turnstile token (set by widget callback in login.html).
+  // Backend skips verification in dev mode (when STOCK_HOLD_TURNSTILE_SECRET
+  // is empty), so this is safe to send unconditionally.
+  const turnstileToken = (typeof window !== "undefined" && typeof window.__turnstileToken === "string")
+    ? window.__turnstileToken
+    : "";
   try {
     submit.disabled = true;
     if (mode === "register") {
       if (data.password !== data.password_confirm) throw new ApiError("VALIDATION_ERROR", "兩次密碼不一致。");
-      await auth.register({ username: data.username, email: data.email, password: data.password });
+      await auth.register({ username: data.username, email: data.email, password: data.password, turnstile_token: turnstileToken });
     } else {
-      await auth.login({ username: data.identity, password: data.password });
+      await auth.login({ username: data.identity, password: data.password, turnstile_token: turnstileToken });
     }
     window.location.href = "./dashboard.html";
   } catch (error) {
