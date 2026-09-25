@@ -138,6 +138,7 @@ export async function mountSettings(root) {
         return;
       }
       tokenHost.querySelector("[data-token-list]").innerHTML =
+        '<div class="table-wrapper">' +
         '<table class="table"><thead><tr><th>Token</th><th>用途</th><th>建立時間</th><th>狀態</th><th></th></tr></thead><tbody>' +
         tokens.map(function(token) {
           return '<tr>' +
@@ -148,7 +149,7 @@ export async function mountSettings(root) {
             '<td><button type="button" class="btn btn--ghost btn--sm" data-revoke="' + token.id + '"' + (!token.is_active ? ' disabled' : '') + '>' + t("action.revoke") + '</button></td>' +
             '</tr>';
         }).join('') +
-        '</tbody></table>';
+        '</tbody></table></div>';
     } catch (e) {
       tokenHost.querySelector("[data-token-list]").innerHTML = '<p class="form-field__hint" style="color:var(--color-error)">' + escapeHtml(e.message) + '</p>';
     }

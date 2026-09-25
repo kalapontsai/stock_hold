@@ -359,6 +359,16 @@
    1–8 item card overlaying the settings page on mobile. */
 @media (max-width: 1023px) {
   .settings-anchor { display: none; }
+  /* Defensive: any bare <table class="table"> rendered inside [data-host]
+     (e.g. the per-user API tokens list, which is hand-rolled rather than
+     built via createDataTable) must scroll horizontally on narrow viewports
+     instead of pushing the page wider than the screen. */
+  [data-host] > .table {
+    display: block;
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
 }
 
 .settings-anchor {
