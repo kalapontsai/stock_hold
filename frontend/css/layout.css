@@ -35,6 +35,24 @@
 /* Mobile (< 1024px): hide sidebar; desktop media query overrides */
 .app__sidebar { display: none; }
 
+/* Mobile (< 1024px): move the bottom tabbar ABOVE the main content so the
+   primary navigation sits right under the page header. Previously:
+   row layout was header / main / tabbar (tabbar at the very bottom); now:
+   header / tabbar / main. Tabs are easier to reach and the main content
+   scrolls cleanly from the top. .tabbar keeps its border-top, which now
+   visually separates tabbar from header (instead of tabbar from main).
+   Header's border-bottom is dropped on mobile to avoid a 2px stacking. */
+@media (max-width: 1023px) {
+  .app {
+    grid-template-rows: auto auto 1fr;
+    grid-template-areas:
+      "header"
+      "tabbar"
+      "main";
+  }
+  .app__header { border-bottom: none; }
+}
+
 /* Desktop layout (≥ 1024px) */
 @media (min-width: 1024px) {
   .app {
