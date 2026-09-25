@@ -51,7 +51,14 @@ rm -rf "$WORK/scripts"
 # work without exposing the key in shell history / log output / redacted
 # transcripts. Refuses well-known placeholders so a stray .env copy of
 # .env.example can never sneak through into deploy/login.html.
-for _sh_envfile in "$REPO_ROOT/.env" "$HOME/.env"; do
+# Operators can override the searched paths entirely via STOCK_HOLD_ENV_FILE
+# (whitespace-separated). When unset we walk a few common locations:
+#   1. repo-local .env (never .env.example — that is public)
+#   2. $HOME/.env
+#   3. /mnt/d/deploy/.env (operator-managed production env on WSL hosts)
+# Each candidate is guarded with [ -r ] so unknown hosts fail quietly.
+: "${STOCK_HOLD_ENV_FILE:=$REPO_ROOT/.env $HOME/.env /mnt/d/deploy/.env}"
+for _sh_envfile in $STOCK_HOLD_ENV_FILE; do
     if [ -z "${STOCK_HOLD_TURNSTILE_SITEKEY:-}" ] && [ -r "$_sh_envfile" ]; then
         _sh_line=$(grep -E "^STOCK_HOLD_TURNSTILE_SITEKEY=" "$_sh_envfile" 2>/dev/null | head -1 || true)
         if [ -n "$_sh_line" ]; then
