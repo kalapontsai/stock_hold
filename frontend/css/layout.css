@@ -373,8 +373,25 @@
   }
 }
 
+.settings-anchor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  position: sticky;
+  top: 80px;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+}
+
 /* Mobile (< 1024px): hide settings anchor card — user does not want the
-   1–8 item card overlaying the settings page on mobile. */
+   1–8 item card overlaying the settings page on mobile.
+
+   IMPORTANT: this media query MUST appear AFTER the base .settings-anchor
+   rule above. Both have identical specificity (one class selector), so CSS
+   picks the later-declared rule. If the order is reversed, the base
+   `display: flex` wins and the anchor stays visible on mobile. */
 @media (max-width: 1023px) {
   .settings-anchor { display: none; }
   /* Defensive: any bare <table class="table"> rendered inside [data-host]
@@ -387,18 +404,6 @@
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
   }
-}
-
-.settings-anchor {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  position: sticky;
-  top: 80px;
-  background: var(--color-bg-elevated);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  padding: var(--space-3);
 }
 .settings-anchor__link {
   padding: var(--space-2) var(--space-3);
