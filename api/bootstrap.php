@@ -116,6 +116,26 @@ function security_headers(): void
     // visit. 2 years + includeSubDomains + preload — operator must register
     // the domain at hstspreload.org to actually push to the browser list.
     header('Strict-Transport-Security: max-age=63072000; includeSubDomains; preload');
+
+    // F-XX: debug instrumentation — opt-in via STOCK_HOLD_DEBUG=1 in .env.
+    // Emits X-Stock-Hold-Debug response header (bootstrap md5 + mtime + commit)
+    // and the same line to PHP error_log. Use `curl -I <url>` to confirm which
+    // bootstrap.php is actually loaded (file replaced vs LiteSpeed opcache stale).
+    if (env_value('STOCK_HOLD_DEBUG') === '1') {
+        $md5 = @md5_file(__FILE__) ?: 'unknown';
+        $mtime = @filemtime(__FILE__);
+        $mtimeStr = $mtime ? gmdate('Y-m-d\TH:i:s\Z', $mtime) : 'unknown';
+        $versionFile = dirname(__DIR__) . '/VERSION.txt';
+        $commit = 'unknown';
+        if (is_readable($versionFile)) {
+            $contents = (string)file_get_contents($versionFile);
+            if (preg_match('/Commit:\s+([0-9a-f]{7,40})/', $contents, $mv)) {
+                $commit = $mv[1];
+            }
+        }
+        header('X-Stock-Hold-Debug: bootstrap_md5=' . $md5 . ' bootstrap_mtime=' . $mtimeStr . ' commit=' . $commit);
+        error_log('[sh-debug] security_headers bootstrap_md5=' . $md5 . ' bootstrap_mtime=' . $mtimeStr . ' commit=' . $commit);
+    }
 }
 
 function request_id(): string
@@ -500,12 +520,25 @@ function verify_turnstile(string $token, ?string $remoteIp = null): bool
 {
     $secret = env_value('STOCK_HOLD_TURNSTILE_SECRET');
     $sitekey = env_value('STOCK_HOLD_TURNSTILE_SITEKEY');
+    // F-XX: debug instrumentation — opt-in via STOCK_HOLD_DEBUG=1 in .env.
+    $debug = env_value('STOCK_HOLD_DEBUG') === '1';
+    if ($debug) {
+        error_log(sprintf(
+            '[sh-debug] verify_turnstile token_len=%d secret_set=%s sitekey_set=%s remote_ip=%s',
+            strlen($token),
+            is_string($secret) && $secret !== '' ? '1' : '0',
+            is_string($sitekey) && $sitekey !== '' ? '1' : '0',
+            $remoteIp ?? 'null'
+        ));
+    }
     // Dev mode: Turnstile not configured -> skip verification.
     if (!is_string($secret) || $secret === '' || !is_string($sitekey) || $sitekey === '') {
+        if ($debug) error_log('[sh-debug] verify_turnstile dev_mode=true (secret/sitekey empty) return=true');
         return true;
     }
     // Production: token must be present.
     if ($token === '') {
+        if ($debug) error_log('[sh-debug] verify_turnstile token empty in prod mode return=false');
         return false;
     }
 
@@ -538,14 +571,20 @@ function verify_turnstile(string $token, ?string $remoteIp = null): bool
     if ($curlErr !== 0 || $httpCode !== 200 || !is_string($response) || $response === '') {
         // Fail-closed: if we can't reach Cloudflare, reject. Operator will see
         // this in error log and can decide whether to disable Turnstile.
+        if ($debug) error_log("[sh-debug] verify_turnstile cloudflare api fail curl_err=$curlErr http=$httpCode");
         return false;
     }
 
     $data = json_decode($response, true);
     if (!is_array($data)) {
+        if ($debug) error_log('[sh-debug] verify_turnstile response not JSON return=false');
         return false;
     }
-    return ($data['success'] ?? false) === true;
+    $success = ($data['success'] ?? false) === true;
+    if ($debug) {
+        error_log('[sh-debug] verify_turnstile cloudflare success=' . ($success ? 'true' : 'false') . ' errors=' . json_encode($data['error-codes'] ?? []));
+    }
+    return $success;
 }
 
 function now_sql(): string
