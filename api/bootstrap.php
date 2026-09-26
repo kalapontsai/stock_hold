@@ -96,9 +96,41 @@ function json_response(array $body, int $status = 200): never
 
 function security_headers(): void
 {
+    // Defense in depth: these headers are also configured at Cloudflare
+    // Transform Rules. PHP is the authoritative source (always emitted on
+    // every response); Cloudflare is the backup layer (Set action overrides
+    // PHP if rules are active — keep both in sync via the deploy checklist).
+    // Tested header list: see `curl -I https://tracker.elhomeo.com/api/v1/health`.
+
+    // === Anti-MIME-sniffing ===
+    // Stops IE/Chrome from guessing content types — forces declared type.
     header('X-Content-Type-Options: nosniff');
+
+    // === Clickjacking protection ===
+    // DENY = no framing at all (even same-origin). stock_hold has no embed use.
     header('X-Frame-Options: DENY');
+
+    // === Referer leakage ===
+    // Send full path only to same-origin; bare origin on cross-origin HTTPS→HTTPS;
+    // nothing on HTTPS→HTTP downgrades.
     header('Referrer-Policy: strict-origin-when-cross-origin');
+
+    // === Permissions-Policy (formerly Feature-Policy) ===
+    // Stock_hold has no use for any of these browser APIs. Denying them all
+    // means a compromised third-party script (e.g. a future Turnstile supply-
+    // chain attack) cannot silently request camera/mic/geo/etc. from the user.
+    // Turnstile widget does not need any of these — it is purely visual.
+    header('Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), accelerometer=(), gyroscope=(), magnetometer=(), serial=()');
+
+    // === Cross-Origin isolation ===
+    // COOP: window.opener from cross-origin tabs cannot reference our window.
+    //   Stock_hold does not open popups — safe to lock down fully.
+    // CORP: cross-origin pages cannot load our resources as <script>/<img>/etc.
+    //   Block side-channel attacks via resource embedding. Same-origin only.
+    header('Cross-Origin-Opener-Policy: same-origin');
+    header('Cross-Origin-Resource-Policy: same-origin');
+
+    // === Content Security Policy ===
     // F-12 fix: Turnstile integration needs three extra origins. Without these,
     // the CSP would silently block the Turnstile widget script, iframe, and
     // the (already server-side) siteverify call.
