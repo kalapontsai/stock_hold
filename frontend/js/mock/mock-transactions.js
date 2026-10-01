@@ -62,7 +62,30 @@ export async function listTransactions({ query } = {}) {
       );
     }
   }
-  return rows.sort((a, b) => (a.txn_date < b.txn_date ? 1 : a.txn_date > b.txn_date ? -1 : TYPE_SORT[b.type] - TYPE_SORT[a.type]));
+  rows.sort((a, b) => (a.txn_date < b.txn_date ? 1 : a.txn_date > b.txn_date ? -1 : TYPE_SORT[b.type] - TYPE_SORT[a.type]));
+
+  // Mirror backend semantics: page_size omitted ⇒ no LIMIT (return all rows
+  // with `page_size` set to total so the page indicator stays coherent);
+  // page_size provided ⇒ slice and clamp page to total_pages.
+  const total = rows.length;
+  const applyLimit = query && query.page_size !== undefined && query.page_size !== "" && query.page_size !== null;
+  const pageSize = applyLimit
+    ? Math.max(1, Math.min(200, Number(query.page_size) || 25))
+    : Math.max(total, 1);
+  const totalPages = applyLimit ? Math.max(1, Math.ceil(total / pageSize)) : 1;
+  const requestedPage = Math.max(1, Number(query?.page) || 1);
+  const page = applyLimit ? Math.min(requestedPage, totalPages) : 1;
+  const offset = (page - 1) * pageSize;
+  const items = applyLimit ? rows.slice(offset, offset + pageSize) : rows;
+  return {
+    items,
+    pagination: {
+      total,
+      page,
+      page_size: pageSize,
+      total_pages: totalPages,
+    },
+  };
 }
 
 export async function getTransaction() {

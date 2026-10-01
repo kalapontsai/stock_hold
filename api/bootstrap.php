@@ -643,16 +643,20 @@ function decimal(mixed $value, string $default = '0'): string
     return (string)$value;
 }
 
-function list_data(array $items, int $page = 1, int $pageSize = 25): array
+function list_data(array $items, int $page = 1, int $pageSize = 25, ?int $total = null): array
 {
-    $total = count($items);
+    // When called without an explicit $total, the total is derived from the
+    // returned items — fine for callers that always return the full result
+    // set. Paginated callers (e.g. GET /transactions) pass the unfiltered
+    // COUNT(*) so `pagination.total` stays accurate after LIMIT/OFFSET.
+    $resolvedTotal = $total ?? count($items);
     return [
         'items' => $items,
         'pagination' => [
-            'total' => $total,
+            'total' => $resolvedTotal,
             'page' => $page,
             'page_size' => $pageSize,
-            'total_pages' => max(1, (int)ceil($total / max(1, $pageSize))),
+            'total_pages' => max(1, (int)ceil($resolvedTotal / max(1, $pageSize))),
         ],
     ];
 }

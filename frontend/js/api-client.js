@@ -275,9 +275,16 @@ export const securities = {
   remove: (id) => request("POST", "/securities/disable", { id }),
 };
 
-/* Transactions */
+/* Transactions
+ *
+ * `list` returns `{ items, pagination }` where `pagination` is
+ *   { total, page, page_size, total_pages }.
+ * Other list helpers (`accounts.list`, `securities.list`, …) keep the
+ * legacy array-only contract to avoid touching their callers; the
+ * transactions page is the only paginated list right now.
+ */
 export const transactions = {
-  list: (q) => request("GET", "/transactions", null, { query: q }).then(listItems),
+  list: (q) => request("GET", "/transactions", null, { query: q }),
   get:  (id) => request("GET", `/transactions/${id}`, null),
   create: (body) => request("POST", "/transactions/create", body),
   update: (id, body) => request("POST", "/transactions/update", { ...body, id }),

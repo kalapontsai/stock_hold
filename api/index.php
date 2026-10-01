@@ -540,13 +540,50 @@ if ($method === 'GET' && $path === '/transactions') {
     }
     if (!empty($_GET['from'])) { $where[] = 't.txn_date >= ?'; $args[] = $_GET['from']; }
     if (!empty($_GET['to'])) { $where[] = 't.txn_date <= ?'; $args[] = $_GET['to']; }
+    if (!empty($_GET['search'])) {
+        // Server-side search so pagination stays consistent — the previous
+        // client-side-only filter would have been truncated to page_size
+        // rows and silently drop matches.
+        $where[] = '(s.symbol LIKE ? OR s.name LIKE ? OR a.name LIKE ? OR t.note LIKE ?)';
+        $term = '%' . $_GET['search'] . '%';
+        array_push($args, $term, $term, $term, $term);
+    }
     $where[] = 't.user_id = ?';
     $args[] = $userId;
+
+    // Total count under the same WHERE so `pagination.total` reflects the
+    // full result set rather than the page slice.
+    $countSql = 'SELECT COUNT(*) FROM transactions t JOIN accounts a ON a.id=t.account_id AND a.user_id=t.user_id LEFT JOIN securities s ON s.id=t.security_id AND s.user_id=t.user_id';
+    if ($where) $countSql .= ' WHERE ' . implode(' AND ', $where);
+    $countStmt = $pdo->prepare($countSql);
+    $countStmt->execute($args);
+    $total = (int)$countStmt->fetchColumn();
+
+    // page_size omitted ⇒ no LIMIT (backwards compatible with non-paginated
+    // callers such as legacy scripts or exports). page_size capped at 200
+    // to bound response size; < 1 clamped to 25.
+    $page = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
+    $pageSize = 25;
+    $applyLimit = false;
+    if (isset($_GET['page_size']) && $_GET['page_size'] !== '') {
+        $pageSize = max(1, min(200, (int)$_GET['page_size']));
+        $applyLimit = true;
+    }
+    if ($applyLimit) {
+        $maxPage = max(1, (int)ceil($total / $pageSize));
+        $page = min($page, $maxPage);
+    }
+
     $sql = 'SELECT t.*,a.name AS account_name,s.symbol,s.name AS security_name FROM transactions t JOIN accounts a ON a.id=t.account_id AND a.user_id=t.user_id LEFT JOIN securities s ON s.id=t.security_id AND s.user_id=t.user_id';
     if ($where) $sql .= ' WHERE ' . implode(' AND ', $where);
     $sql .= ' ORDER BY t.txn_date DESC,t.created_at DESC';
-    $stmt = $pdo->prepare($sql); $stmt->execute($args);
-    envelope_ok(list_data($stmt->fetchAll()));
+    if ($applyLimit) {
+        $offset = ($page - 1) * $pageSize;
+        $sql .= " LIMIT $pageSize OFFSET $offset";
+    }
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($args);
+    envelope_ok(list_data($stmt->fetchAll(), $page, $pageSize, $total));
 }
 if ($method === 'POST' && $path === '/transactions/create') {
     $row = transaction_payload($pdo, $userId, $input);

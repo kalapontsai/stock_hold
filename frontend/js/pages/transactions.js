@@ -14,6 +14,24 @@ import { createCurrencyInput } from "../components/currency-input.js";
 
 const TYPE_KEYS = ["BUY","SELL","DIVIDEND","DEPOSIT","WITHDRAW","TRANSFER_IN","TRANSFER_OUT","FEE","SPLIT","MERGER","RIGHTS"];
 
+// Pagination: page-size selector (default 25, persists per device). Page size
+// cap mirrors the server-side cap (api/index.php in GET /transactions) so the
+// UI never claims more rows than the backend will actually return.
+const PAGE_SIZE_STORAGE_KEY = "stock_hold.txn.pageSize";
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
+const PAGE_SIZE_DEFAULT = 25;
+function loadPageSize() {
+  try {
+    const v = Number(localStorage.getItem(PAGE_SIZE_STORAGE_KEY));
+    return PAGE_SIZE_OPTIONS.includes(v) ? v : PAGE_SIZE_DEFAULT;
+  } catch (_) {
+    return PAGE_SIZE_DEFAULT;
+  }
+}
+function savePageSize(v) {
+  try { localStorage.setItem(PAGE_SIZE_STORAGE_KEY, String(v)); } catch (_) { /* ignore */ }
+}
+
 export async function mountTransactions(root) {
   root.innerHTML = "";
 
@@ -41,10 +59,9 @@ export async function mountTransactions(root) {
     <div class="filter-bar__group">
       <span class="filter-bar__label">${t("txn.filter.dateRange")}</span>
       <div class="filter-bar__chip-group" data-range-chips>
-        <button type="button" class="btn btn--sm btn--secondary" data-range="thisWeek">${t("filter.range.thisWeek")}</button>
-        <button type="button" class="btn btn--sm btn--secondary" data-range="thisMonth">${t("filter.range.thisMonth")}</button>
-        <button type="button" class="btn btn--sm btn--secondary" data-range="thisQuarter">${t("filter.range.thisQuarter")}</button>
-        <button type="button" class="btn btn--sm btn--secondary" data-range="thisYear">${t("filter.range.thisYear")}</button>
+        <button type="button" class="btn btn--sm btn--secondary" data-range="last7">${t("filter.range.last7")}</button>
+        <button type="button" class="btn btn--sm btn--secondary" data-range="last30">${t("filter.range.last30")}</button>
+        <button type="button" class="btn btn--sm btn--secondary" data-range="last365">${t("filter.range.last365")}</button>
         <button type="button" class="btn btn--sm btn--secondary" data-range="custom">${t("filter.range.custom")}</button>
       </div>
       <div class="filter-bar__custom-range" hidden data-custom-range>
@@ -79,6 +96,28 @@ export async function mountTransactions(root) {
   const tableHost = document.createElement("div");
   root.appendChild(tableHost);
 
+  // --- Pagination bar (page-size selector + prev/next/page indicator)
+  const paginationBar = document.createElement("div");
+  paginationBar.className = "pagination-bar";
+  paginationBar.innerHTML = `
+    <div class="pagination-bar__info">
+      <label class="pagination-bar__label" for="txn-page-size">${t("txn.pagination.pageSize")}</label>
+      <select id="txn-page-size" class="select" data-page-size style="width:auto;height:32px">
+        ${PAGE_SIZE_OPTIONS.map((n) => `<option value="${n}">${n}</option>`).join("")}
+      </select>
+      <span class="pagination-bar__count" data-pagination-count></span>
+    </div>
+    <div class="pagination-bar__nav" role="group" aria-label="${t("txn.pagination.pageOf", { page: 1, total: 1 })}">
+      <button type="button" class="btn btn--ghost btn--sm btn--icon-only" data-page-action="first" aria-label="${t("txn.pagination.first")}">«</button>
+      <button type="button" class="btn btn--ghost btn--sm btn--icon-only" data-page-action="prev" aria-label="${t("txn.pagination.prev")}">‹</button>
+      <span class="pagination-bar__indicator" data-pagination-indicator aria-live="polite"></span>
+      <button type="button" class="btn btn--ghost btn--sm btn--icon-only" data-page-action="next" aria-label="${t("txn.pagination.next")}">›</button>
+      <button type="button" class="btn btn--ghost btn--sm btn--icon-only" data-page-action="last" aria-label="${t("txn.pagination.last")}">»</button>
+    </div>
+  `;
+  paginationBar.querySelector("[data-page-size]").value = String(loadPageSize());
+  root.appendChild(paginationBar);
+
   // --- Batch action bar
   const batchBar = document.createElement("div");
   batchBar.style.marginTop = "var(--space-3)";
@@ -91,10 +130,13 @@ export async function mountTransactions(root) {
 
   // --- State
   const state = {
-    range: "thisMonth",
+    range: "last30",
     from: null, to: null,
     account: "", type: "", search: "",
     rows: [],
+    page: 1,
+    pageSize: loadPageSize(),
+    pagination: { total: 0, page: 1, page_size: 0, total_pages: 1 },
   };
 
   // --- Load accounts + type options
@@ -116,8 +158,8 @@ export async function mountTransactions(root) {
     typeSel.appendChild(opt);
   });
 
-  // Default range to this month
-  applyRangePreset("thisMonth");
+  // Default range to last 30 days (matches "30天" chip on first load)
+  applyRangePreset("last30");
 
   let table;
   function buildTable(rows) {
@@ -190,24 +232,30 @@ export async function mountTransactions(root) {
     clearTimeout(searchDebounce);
     searchDebounce = setTimeout(() => {
       state.search = e.target.value;
+      state.page = 1;
       refetch();
     }, 250);
   });
   filterBar.querySelector('[data-filter="account"]').addEventListener("change", (e) => {
-    state.account = e.target.value; refetch();
+    state.account = e.target.value;
+    state.page = 1;
+    refetch();
   });
   filterBar.querySelector('[data-filter="type"]').addEventListener("change", (e) => {
-    state.type = e.target.value; refetch();
+    state.type = e.target.value;
+    state.page = 1;
+    refetch();
   });
   filterBar.querySelector("[data-action=clear]").addEventListener("click", () => {
-    state.range = "thisMonth";
+    state.range = "last30";
     state.from = null; state.to = null;
     state.account = ""; state.type = ""; state.search = "";
+    state.page = 1;
     filterBar.querySelector('[data-filter="account"]').value = "";
     filterBar.querySelector('[data-filter="type"]').value = "";
     filterBar.querySelector('[data-filter="search"]').value = "";
     filterBar.querySelectorAll("[data-range]").forEach((b) => b.classList.remove("btn--primary"));
-    filterBar.querySelector('[data-range="thisMonth"]').classList.add("btn--primary");
+    filterBar.querySelector('[data-range="last30"]').classList.add("btn--primary");
     refetch();
   });
 
@@ -217,12 +265,48 @@ export async function mountTransactions(root) {
       filterBar.querySelectorAll("[data-range]").forEach((b) => b.classList.remove("btn--primary"));
       btn.classList.add("btn--primary");
       applyRangePreset(btn.dataset.range);
+      state.page = 1;
       refetch();
     });
   });
-  filterBar.querySelector('[data-range="thisMonth"]').classList.add("btn--primary");
-  filterBar.querySelector("[data-from]").addEventListener("change", (e) => { state.from = e.target.value; refetch(); });
-  filterBar.querySelector("[data-to]").addEventListener("change", (e) => { state.to = e.target.value; refetch(); });
+  filterBar.querySelector('[data-range="last30"]').classList.add("btn--primary");
+  filterBar.querySelector("[data-from]").addEventListener("change", (e) => {
+    state.from = e.target.value;
+    state.page = 1;
+    refetch();
+  });
+  filterBar.querySelector("[data-to]").addEventListener("change", (e) => {
+    state.to = e.target.value;
+    state.page = 1;
+    refetch();
+  });
+
+  // --- Wire pagination bar
+  paginationBar.querySelector("[data-page-size]").addEventListener("change", (e) => {
+    const next = Number(e.target.value);
+    if (!PAGE_SIZE_OPTIONS.includes(next)) return;
+    state.pageSize = next;
+    state.page = 1;
+    savePageSize(next);
+    refetch();
+  });
+  paginationBar.querySelectorAll("[data-page-action]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const totalPages = Math.max(1, state.pagination.total_pages || 1);
+      const target = {
+        first: 1,
+        prev:  Math.max(1, state.page - 1),
+        next:  Math.min(totalPages, state.page + 1),
+        last:  totalPages,
+      }[btn.dataset.pageAction];
+      if (target == null || target === state.page) return;
+      state.page = target;
+      // Carry IDs across pages would let a stale "select all" silently
+      // batch-delete rows from a previous page, so clear on navigation.
+      if (table && typeof table.clearSelection === "function") table.clearSelection();
+      refetch();
+    });
+  });
 
   // Header actions
   header.querySelector("[data-action=add]").addEventListener("click", () => openEditModal(null));
@@ -544,6 +628,11 @@ export async function mountTransactions(root) {
   }
 
   // --- Range presets
+  // Sliding-window semantics: "7天" / "30天" / "1年" each mean "the last N
+  // days inclusive of today" — i.e. from = today − (N−1) days, to = today.
+  // This differs from the previous calendar-period presets (本週 / 本月 / …)
+  // which were anchored to the calendar week / month / quarter / year.
+  const RANGE_DAYS = { last7: 7, last30: 30, last365: 365 };
   function applyRangePreset(p) {
     const today = new Date();
     today.setUTCHours(0,0,0,0);
@@ -555,35 +644,57 @@ export async function mountTransactions(root) {
     }
     filterBar.querySelector("[data-custom-range]").hidden = true;
     state.range = p;
-    let from = today, to = today;
-    if (p === "thisWeek") {
-      const dow = today.getUTCDay() || 7;
-      from = new Date(today); from.setUTCDate(today.getUTCDate() - (dow - 1));
-    } else if (p === "thisMonth") {
-      from = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
-    } else if (p === "thisQuarter") {
-      const q = Math.floor(today.getUTCMonth() / 3) * 3;
-      from = new Date(Date.UTC(today.getUTCFullYear(), q, 1));
-    } else if (p === "thisYear") {
-      from = new Date(Date.UTC(today.getUTCFullYear(), 0, 1));
+    const days = RANGE_DAYS[p];
+    if (days) {
+      const from = new Date(today);
+      from.setUTCDate(today.getUTCDate() - (days - 1));
+      state.from = fmt(from);
+      state.to = fmt(today);
     }
-    state.from = fmt(from); state.to = fmt(to);
   }
 
   async function refetch() {
-    const q = {};
+    const q = { page: state.page, page_size: state.pageSize };
     if (state.from) q.from = state.from;
     if (state.to)   q.to = state.to;
     if (state.account) q.account_id = state.account;
     if (state.type) q.type = state.type;
     if (state.search) q.search = state.search;
     try {
-      const rows = await api.transactions.list(q);
-      state.rows = rows;
-      buildTable(rows);
+      const result = await api.transactions.list(q);
+      const items = Array.isArray(result?.items) ? result.items : (Array.isArray(result) ? result : []);
+      state.rows = items;
+      // Defensive default for callers that haven't been updated to the
+      // paginated envelope (e.g. a future mock that returns a bare array).
+      state.pagination = result?.pagination || {
+        total: items.length,
+        page: state.page,
+        page_size: state.pageSize,
+        total_pages: Math.max(1, Math.ceil(items.length / state.pageSize)),
+      };
+      // Server-side page clamp (e.g. user-requested page > total_pages).
+      if (state.pagination.page && state.pagination.page !== state.page) {
+        state.page = state.pagination.page;
+      }
+      buildTable(items);
+      renderPagination();
     } catch (e) {
       toast(e.message, { tone: "error" });
     }
+  }
+
+  function renderPagination() {
+    const total = state.pagination.total ?? state.rows.length;
+    const totalPages = Math.max(1, state.pagination.total_pages ?? 1);
+    const page = state.page;
+    paginationBar.querySelector("[data-pagination-count]").textContent =
+      t("txn.pagination.total", { n: total });
+    paginationBar.querySelector("[data-pagination-indicator]").textContent =
+      t("txn.pagination.pageOf", { page, total: totalPages });
+    paginationBar.querySelector('[data-page-action="first"]').disabled = page <= 1;
+    paginationBar.querySelector('[data-page-action="prev"]').disabled  = page <= 1;
+    paginationBar.querySelector('[data-page-action="next"]').disabled  = page >= totalPages;
+    paginationBar.querySelector('[data-page-action="last"]').disabled  = page >= totalPages;
   }
   await refetch();
 
