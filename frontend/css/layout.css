@@ -359,6 +359,23 @@
   gap: var(--space-2);
 }
 
+/* Highlight a filter group when it carries an active value (account / type /
+   search). The range chip already uses .btn--primary on the active chip;
+   selects and search have no native "selected" affordance, so the label
+   goes bold + primary and the control border picks up --color-primary-500.
+   Applied by mountTransactions().updateFilterHighlights(). */
+.filter-bar__group.is-active .select,
+.filter-bar__group.is-active .input {
+  border-color: var(--color-primary-500);
+}
+.filter-bar__group.is-active .filter-bar__label {
+  color: var(--color-primary-700);
+  font-weight: var(--font-weight-semibold);
+}
+[data-theme="dark"] .filter-bar__group.is-active .filter-bar__label {
+  color: var(--color-primary-200);
+}
+
 /* ---------- Settings anchor nav (desktop) ---------- */
 .settings-layout {
   display: grid;

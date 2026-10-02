@@ -662,6 +662,7 @@ export async function mountTransactions(root) {
   }
 
   async function refetch() {
+    updateFilterHighlights();
     const q = { page: state.page, page_size: state.pageSize };
     if (state.from) q.from = state.from;
     if (state.to)   q.to = state.to;
@@ -689,6 +690,21 @@ export async function mountTransactions(root) {
     } catch (e) {
       toast(e.message, { tone: "error" });
     }
+  }
+
+  function updateFilterHighlights() {
+    // The range chip already carries .btn--primary on the active chip, so
+    // it does not need an extra group-level marker. Account / type / search
+    // have no native "selected" affordance, so we tag their .filter-bar__group
+    // with .is-active to surface "currently filtering by this" at a glance.
+    // CSS lives in css/layout.css (.filter-bar__group.is-active).
+    const setGroup = (selector, active) => {
+      const el = filterBar.querySelector(selector);
+      el?.closest(".filter-bar__group")?.classList.toggle("is-active", active);
+    };
+    setGroup('[data-filter="account"]', !!state.account);
+    setGroup('[data-filter="type"]', !!state.type);
+    setGroup('[data-filter="search"]', !!state.search.trim());
   }
 
   function renderPagination() {
