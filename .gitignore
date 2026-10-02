@@ -3,6 +3,9 @@
 /.env.*
 !/.env.example
 
+# Local user config (real deploy URL + API token — must not leak to public repo)
+config.json
+
 # Personal financial data and runtime files
 /runtime/
 /data/

@@ -1,0 +1,8 @@
+{
+  "deploy_url": "https://your-stockhold.example.com",
+  "api_token": "***",
+  "output_path": "./output.json",
+  "price_source": "yfinance",
+  "history_days": 10,
+  "fallback_to_twse": true
+}
