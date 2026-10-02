@@ -100,6 +100,12 @@ export async function mountTransactions(root) {
   `;
   root.appendChild(filterBar);
 
+  // --- Active filter summary strip (chips listing active filters with × buttons)
+  const activeFiltersHost = document.createElement("div");
+  activeFiltersHost.className = "filter-summary";
+  activeFiltersHost.setAttribute("aria-live", "polite");
+  root.appendChild(activeFiltersHost);
+
   // --- Table host
   const tableHost = document.createElement("div");
   root.appendChild(tableHost);
@@ -693,11 +699,16 @@ export async function mountTransactions(root) {
   }
 
   function updateFilterHighlights() {
-    // The range chip already carries .btn--primary on the active chip, so
-    // it does not need an extra group-level marker. Account / type / search
-    // have no native "selected" affordance, so we tag their .filter-bar__group
-    // with .is-active to surface "currently filtering by this" at a glance.
-    // CSS lives in css/layout.css (.filter-bar__group.is-active).
+    // Mark each .filter-bar__group with .is-active when its control has a
+    // non-default value, then refresh the active-filter chip strip below
+    // the bar. CSS in css/layout.css (.filter-bar__group.is-active +
+    // .filter-summary) drives the visual.
+    //
+    // Range note: the preset chips (last7/last30/last365) use .btn--primary
+    // on the active chip, so the dateRange group does NOT get .is-active
+    // for those — it would be redundant. But for `custom` range, no chip
+    // carries .btn--primary (the two date inputs do), so we DO mark the
+    // dateRange group then.
     const setGroup = (selector, active) => {
       const el = filterBar.querySelector(selector);
       el?.closest(".filter-bar__group")?.classList.toggle("is-active", active);
@@ -705,6 +716,103 @@ export async function mountTransactions(root) {
     setGroup('[data-filter="account"]', !!state.account);
     setGroup('[data-filter="type"]', !!state.type);
     setGroup('[data-filter="search"]', !!state.search.trim());
+    // dateRange group is the first .filter-bar__group sibling (no data-filter)
+    const dateRangeGroup = filterBar.querySelector(".filter-bar__group:not(:has([data-filter]))");
+    dateRangeGroup?.classList.toggle("is-active", state.range === "custom" && !!(state.from || state.to));
+
+    renderActiveFilters();
+  }
+
+  function renderActiveFilters() {
+    // List each currently-applied condition as a removable chip. Clicking
+    // the × clears that single condition (mirrored to the control + refetch).
+    // Hidden when no filters are active (default: just range = last30).
+    const chips = [];
+    const labelOf = (key, fallback) => {
+      try { const v = t(key); return v === key ? fallback : v; }
+      catch { return fallback; }
+    };
+
+    if (state.range === "custom" && (state.from || state.to)) {
+      const from = state.from || "…";
+      const to   = state.to   || "…";
+      chips.push({
+        key: "range",
+        text: labelOf("txn.filter.dateRange", "Date") + `: ${from} ~ ${to}`,
+        clear: () => {
+          state.range = "last30";
+          state.from = null; state.to = null;
+          applyRangePreset("last30");
+          filterBar.querySelector('[data-range="custom"]').classList.remove("btn--primary");
+          filterBar.querySelector('[data-range="last30"]').classList.add("btn--primary");
+          state.page = 1;
+        },
+      });
+    }
+    if (state.account) {
+      const sel = filterBar.querySelector('[data-filter="account"]');
+      const name = sel?.selectedOptions?.[0]?.textContent || state.account;
+      chips.push({
+        key: "account",
+        text: labelOf("txn.filter.account", "Account") + `: ${name}`,
+        clear: () => {
+          state.account = "";
+          sel.value = "";
+          state.page = 1;
+        },
+      });
+    }
+    if (state.type) {
+      const sel = filterBar.querySelector('[data-filter="type"]');
+      chips.push({
+        key: "type",
+        text: labelOf("txn.filter.type", "Type") + `: ${sel?.selectedOptions?.[0]?.textContent || state.type}`,
+        clear: () => {
+          state.type = "";
+          sel.value = "";
+          state.page = 1;
+        },
+      });
+    }
+    if (state.search.trim()) {
+      const searchEl = filterBar.querySelector('[data-filter="search"]');
+      chips.push({
+        key: "search",
+        text: `${labelOf("action.search", "Search")}: "${state.search.trim()}"`,
+        clear: () => {
+          state.search = "";
+          searchEl.value = "";
+          state.page = 1;
+        },
+      });
+    }
+
+    activeFiltersHost.innerHTML = "";
+    if (!chips.length) return;
+
+    const label = document.createElement("span");
+    label.className = "filter-summary__label";
+    label.textContent = labelOf("txn.activeFilters", "Active filters") + ":";
+    activeFiltersHost.appendChild(label);
+
+    for (const chip of chips) {
+      const el = document.createElement("span");
+      el.className = "filter-summary__chip";
+      el.dataset.chipKey = chip.key;
+      const txt = document.createElement("span");
+      txt.textContent = chip.text;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.setAttribute("aria-label", labelOf("action.clear", "Clear"));
+      btn.textContent = "×";
+      btn.addEventListener("click", () => {
+        chip.clear();
+        refetch();
+      });
+      el.appendChild(txt);
+      el.appendChild(btn);
+      activeFiltersHost.appendChild(el);
+    }
   }
 
   function renderPagination() {

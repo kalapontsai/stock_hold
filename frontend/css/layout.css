@@ -360,20 +360,95 @@
 }
 
 /* Highlight a filter group when it carries an active value (account / type /
-   search). The range chip already uses .btn--primary on the active chip;
-   selects and search have no native "selected" affordance, so the label
-   goes bold + primary and the control border picks up --color-primary-500.
+   search / custom range). The range preset chips (last7/last30/last365) use
+   .btn--primary on the active chip, but "custom" range has no chip carrying
+   .btn--primary — it uses two date inputs instead — so the dateRange group
+   also needs the .is-active marker in that case.
+
+   Visual signals (stacked for at-a-glance recognition):
+     1. soft tinted background on the group
+     2. 2px primary outline on the control(s)
+     3. label goes bold + primary
+
    Applied by mountTransactions().updateFilterHighlights(). */
+.filter-bar__group {
+  border-radius: var(--radius-md);
+  transition: background-color var(--duration-fast),
+              box-shadow var(--duration-fast);
+}
+.filter-bar__group.is-active {
+  background-color: color-mix(in srgb, var(--color-primary-500) 8%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-primary-500) 35%, transparent);
+}
 .filter-bar__group.is-active .select,
 .filter-bar__group.is-active .input {
   border-color: var(--color-primary-500);
+  border-width: 2px;
+  /* Compensate the +1px border so the control doesn't jump in size. */
+  margin-block: -1px;
 }
 .filter-bar__group.is-active .filter-bar__label {
   color: var(--color-primary-700);
   font-weight: var(--font-weight-semibold);
 }
+[data-theme="dark"] .filter-bar__group.is-active {
+  background-color: color-mix(in srgb, var(--color-primary-500) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-primary-500) 45%, transparent);
+}
 [data-theme="dark"] .filter-bar__group.is-active .filter-bar__label {
   color: var(--color-primary-200);
+}
+
+/* ---------- Active filter summary chips ---------- */
+/* A horizontal strip below the filter bar that lists each currently-applied
+   filter as a removable chip. Helps users answer "what am I filtering by?"
+   at a glance and clear individual conditions without going back to the
+   filter bar. Rendered by mountTransactions().renderActiveFilters(). */
+.filter-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  margin-top: var(--space-3);
+  min-height: 0;
+}
+.filter-summary:empty {
+  display: none;
+}
+.filter-summary__label {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  margin-right: var(--space-1);
+}
+.filter-summary__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border-radius: 999px;
+  background-color: color-mix(in srgb, var(--color-primary-500) 12%, transparent);
+  color: var(--color-primary-700);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+  border: 1px solid color-mix(in srgb, var(--color-primary-500) 35%, transparent);
+}
+.filter-summary__chip button {
+  background: none;
+  border: 0;
+  padding: 0 0 0 var(--space-1);
+  cursor: pointer;
+  color: inherit;
+  font-size: var(--text-base);
+  line-height: 1;
+  opacity: 0.7;
+}
+.filter-summary__chip button:hover {
+  opacity: 1;
+}
+[data-theme="dark"] .filter-summary__chip {
+  background-color: color-mix(in srgb, var(--color-primary-500) 18%, transparent);
+  color: var(--color-primary-200);
+  border-color: color-mix(in srgb, var(--color-primary-500) 45%, transparent);
 }
 
 /* ---------- Settings anchor nav (desktop) ---------- */
