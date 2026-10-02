@@ -32,6 +32,14 @@ function savePageSize(v) {
   try { localStorage.setItem(PAGE_SIZE_STORAGE_KEY, String(v)); } catch (_) { /* ignore */ }
 }
 
+// Date-range chip values (days). Sliding-window semantics: each preset is
+// "last N days inclusive of today" — from = today − (N−1) days, to = today.
+// Defined at module scope (not inside mountTransactions) because
+// applyRangePreset() is invoked during the mount setup *before* the inner
+// const would be reachable → TDZ "Cannot access 'RANGE_DAYS' before
+// initialization" on transactions.html. Verified 2026-10-01.
+const RANGE_DAYS = { last7: 7, last30: 30, last365: 365 };
+
 export async function mountTransactions(root) {
   root.innerHTML = "";
 
@@ -630,9 +638,9 @@ export async function mountTransactions(root) {
   // --- Range presets
   // Sliding-window semantics: "7天" / "30天" / "1年" each mean "the last N
   // days inclusive of today" — i.e. from = today − (N−1) days, to = today.
-  // This differs from the previous calendar-period presets (本週 / 本月 / …)
-  // which were anchored to the calendar week / month / quarter / year.
-  const RANGE_DAYS = { last7: 7, last30: 30, last365: 365 };
+  // RANGE_DAYS itself lives at module scope (see top of file) — defining it
+  // here would hit a TDZ the first time applyRangePreset() is invoked during
+  // the mount setup.
   function applyRangePreset(p) {
     const today = new Date();
     today.setUTCHours(0,0,0,0);
