@@ -203,9 +203,14 @@ SetEnv STOCK_HOLD_RUNTIME_DIR "${DEPLOY_RUNTIME}"
 SetEnv STOCK_HOLD_API_TOKEN    "<openssl rand -hex 32>"
 SetEnv STOCK_HOLD_INIT_TOKEN   "<openssl rand -hex 32>"
 SetEnv STOCK_HOLD_UPDATE_REPO  "kalapontsai/stock_hold"
+# Optional: Google reCAPTCHA Enterprise login risk assessment
+SetEnv STOCK_HOLD_RECAPTCHA_SITE_KEY "<site-key>"
+SetEnv STOCK_HOLD_RECAPTCHA_PROJECT_ID "<google-cloud-project-id>"
+SetEnv STOCK_HOLD_RECAPTCHA_API_KEY "<restricted-google-api-key>"
+SetEnv STOCK_HOLD_RECAPTCHA_MIN_SCORE "0.5"
 ```
 
-參考 `.env.example` 取得完整變數清單。
+亦可將上述 reCAPTCHA 變數放在專案根目錄 `.env`。API key 僅供伺服器呼叫 Google，請限制為 reCAPTCHA Enterprise API；分數門檻以下拒絕登入，Google API 故障時 fail-open。若 Cloudflare 設有全站 CSP，需同步允許 `script-src` 的 `www.google.com/recaptcha/` 與 `www.gstatic.com/recaptcha/`、`frame-src` 的 `www.google.com/recaptcha/` 與 `recaptcha.google.com/recaptcha/`，以及 `connect-src` 的 Google reCAPTCHA 端點。參考 `.env.example` 取得完整變數清單。
 
 ### 6.4 首次 migration
 

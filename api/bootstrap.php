@@ -136,7 +136,7 @@ function security_headers(): void
     // Both are blocked without these additions.
     //
     // Third-party origins are kept tight to Cloudflare Web Analytics.
-    header("Content-Security-Policy: default-src 'self'; script-src 'self' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://*.insights.cloudflare.com");
+    header("Content-Security-Policy: default-src 'self'; script-src 'self' https://static.cloudflareinsights.com https://www.google.com/recaptcha/ https://www.gstatic.com/recaptcha/; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; frame-src https://www.google.com/recaptcha/ https://recaptcha.google.com/recaptcha/; connect-src 'self' https://*.insights.cloudflare.com https://www.google.com/recaptcha/ https://recaptcha.google.com/recaptcha/");
     // F-05 fix: HSTS so browsers refuse to downgrade HTTP→HTTPS after first
     // visit. 2 years + includeSubDomains + preload — operator must register
     // the domain at hstspreload.org to actually push to the browser list.
@@ -395,6 +395,114 @@ function require_csrf_token(): void
 function client_ip(): string
 {
     return substr((string)($_SERVER['REMOTE_ADDR'] ?? '0.0.0.0'), 0, 64);
+}
+
+function recaptcha_enterprise_config(): array
+{
+    $siteKey = env_value('STOCK_HOLD_RECAPTCHA_SITE_KEY') ?? '';
+    $projectId = env_value('STOCK_HOLD_RECAPTCHA_PROJECT_ID') ?? '';
+    $apiKey = env_value('STOCK_HOLD_RECAPTCHA_API_KEY') ?? '';
+    $configured = $siteKey !== '' && $projectId !== '' && $apiKey !== ''
+        && !is_known_placeholder($siteKey)
+        && !is_known_placeholder($projectId)
+        && !is_known_placeholder($apiKey);
+
+    return [
+        'enabled' => $configured,
+        'site_key' => $configured ? $siteKey : '',
+        'project_id' => $projectId,
+        'api_key' => $apiKey,
+    ];
+}
+
+// Returns true when allowed, false for a low/invalid-risk token, and null
+// when Google's assessment service is unavailable (configured fail-open).
+function recaptcha_assess_login(string $token): ?bool
+{
+    $config = recaptcha_enterprise_config();
+    if (!$config['enabled']) {
+        return true;
+    }
+    if ($token === '') {
+        return false;
+    }
+
+    $thresholdValue = env_value('STOCK_HOLD_RECAPTCHA_MIN_SCORE', '0.5');
+    if (!is_numeric($thresholdValue) || (float)$thresholdValue < 0 || (float)$thresholdValue > 1) {
+        error_log(json_encode(['event' => 'stock_hold_recaptcha_unavailable', 'reason' => 'invalid_threshold']));
+        return null;
+    }
+
+    if (!function_exists('curl_init')) {
+        error_log(json_encode(['event' => 'stock_hold_recaptcha_unavailable', 'reason' => 'curl_unavailable']));
+        return null;
+    }
+
+    $payload = json_encode([
+        'event' => [
+            'token' => $token,
+            'siteKey' => $config['site_key'],
+            'expectedAction' => 'LOGIN',
+            'userAgent' => substr((string)($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 512),
+        ],
+    ], JSON_UNESCAPED_SLASHES);
+    if ($payload === false) {
+        error_log(json_encode(['event' => 'stock_hold_recaptcha_unavailable', 'reason' => 'request_encoding_failed']));
+        return null;
+    }
+
+    $url = 'https://recaptchaenterprise.googleapis.com/v1/projects/'
+        . rawurlencode($config['project_id']) . '/assessments';
+    $curl = curl_init($url);
+    if ($curl === false) {
+        error_log(json_encode(['event' => 'stock_hold_recaptcha_unavailable', 'reason' => 'curl_init_failed']));
+        return null;
+    }
+    curl_setopt_array($curl, [
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => $payload,
+        CURLOPT_HTTPHEADER => [
+            'Content-Type: application/json',
+            'X-Goog-Api-Key: ' . $config['api_key'],
+        ],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CONNECTTIMEOUT => 3,
+        CURLOPT_TIMEOUT => 6,
+        CURLOPT_FOLLOWLOCATION => false,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
+    ]);
+    $response = curl_exec($curl);
+    $status = (int)curl_getinfo($curl, CURLINFO_HTTP_CODE);
+    $curlFailed = $response === false;
+    curl_close($curl);
+
+    if (!$curlFailed && $status === 400) {
+        error_log(json_encode(['event' => 'stock_hold_recaptcha_rejected', 'reason' => 'invalid_request']));
+        return false;
+    }
+    if ($curlFailed || $status < 200 || $status >= 300) {
+        error_log(json_encode([
+            'event' => 'stock_hold_recaptcha_unavailable',
+            'reason' => $curlFailed ? 'request_failed' : 'http_error',
+            'http_status' => $status,
+        ]));
+        return null;
+    }
+
+    $assessment = json_decode((string)$response, true);
+    $tokenProperties = is_array($assessment) ? ($assessment['tokenProperties'] ?? null) : null;
+    if (!is_array($tokenProperties) || ($tokenProperties['valid'] ?? false) !== true
+        || ($tokenProperties['action'] ?? '') !== 'LOGIN') {
+        return false;
+    }
+
+    $score = $assessment['riskAnalysis']['score'] ?? null;
+    if (!is_numeric($score) || (float)$score < 0 || (float)$score > 1) {
+        error_log(json_encode(['event' => 'stock_hold_recaptcha_unavailable', 'reason' => 'invalid_assessment']));
+        return null;
+    }
+    return (float)$score >= (float)$thresholdValue;
 }
 
 function rate_limit_key(string $scope, string $value): string

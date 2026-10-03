@@ -64,6 +64,19 @@ SetEnv STOCK_HOLD_RUNTIME_DIR "D:/docker-volumn/ubuntu-apache2/runtime/stock_hol
 
 若暫時使用專案內的 `runtime/`，現有 `.htaccess` 會禁止 HTTP 讀取。
 
+### Google reCAPTCHA Enterprise 登入風險評估
+
+在專案根目錄的 `.env` 設定下列值；`.env.example` 可供參考。網站金鑰會由同源 API 提供給登入頁，API key 只在 PHP 後端呼叫 Google，不會傳到瀏覽器。
+
+```dotenv
+STOCK_HOLD_RECAPTCHA_SITE_KEY=
+STOCK_HOLD_RECAPTCHA_PROJECT_ID=
+STOCK_HOLD_RECAPTCHA_API_KEY=
+STOCK_HOLD_RECAPTCHA_MIN_SCORE=0.5
+```
+
+三個金鑰/專案欄位都設定後才啟用。分數低於門檻會拒絕登入；Google assessment API 無法連線或回應錯誤時採 fail-open，讓密碼驗證仍可登入。API key 請在 Google Cloud 限制為 reCAPTCHA Enterprise API，勿提交至 Git。
+
 ### 2. API token（Per-user / Agent / CLI 使用）
 
 **Per-user token（多租戶，migration 007+）：** 每個使用者進入「設定 → API Token」來生成 / 列表 / 撤銷。Token 僅顯示一次，保存為 salted SHA-256 hash + 前 8 字元 prefix。

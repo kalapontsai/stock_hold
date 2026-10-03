@@ -4,6 +4,43 @@ const form = document.querySelector("#auth-form");
 const message = document.querySelector("#auth-message");
 const submit = document.querySelector("#auth-submit");
 let mode = "login";
+let recaptchaScriptPromise = null;
+
+async function recaptchaLoginToken() {
+  const config = await auth.recaptchaConfig();
+  if (!config.enabled) return "";
+
+  if (!window.grecaptcha?.enterprise) {
+    if (!recaptchaScriptPromise) {
+      recaptchaScriptPromise = new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = `https://www.google.com/recaptcha/enterprise.js?render=${encodeURIComponent(config.site_key)}`;
+        script.async = true;
+        script.onload = resolve;
+        script.onerror = () => {
+          recaptchaScriptPromise = null;
+          reject(new ApiError("RECAPTCHA_LOAD_FAILED", "安全驗證載入失敗，請稍後再試。"));
+        };
+        document.head.append(script);
+      });
+    }
+    await recaptchaScriptPromise;
+  }
+  if (!window.grecaptcha?.enterprise) {
+    recaptchaScriptPromise = null;
+    throw new ApiError("RECAPTCHA_LOAD_FAILED", "安全驗證載入失敗，請稍後再試。");
+  }
+
+  return new Promise((resolve, reject) => {
+    window.grecaptcha.enterprise.ready(async () => {
+      try {
+        resolve(await window.grecaptcha.enterprise.execute(config.site_key, { action: "LOGIN" }));
+      } catch {
+        reject(new ApiError("RECAPTCHA_EXECUTE_FAILED", "安全驗證失敗，請稍後再試。"));
+      }
+    });
+  });
+}
 
 function setMode(next) {
   mode = next;
@@ -24,19 +61,14 @@ form.addEventListener("submit", async (event) => {
   event.preventDefault();
   message.hidden = true;
   const data = Object.fromEntries(new FormData(form).entries());
-  // F-12: capture Turnstile token (set by widget callback in login.html).
-  // Backend skips verification in dev mode (when STOCK_HOLD_TURNSTILE_SECRET
-  // is empty), so this is safe to send unconditionally.
-  const turnstileToken = (typeof window !== "undefined" && typeof window.__turnstileToken === "string")
-    ? window.__turnstileToken
-    : "";
   try {
     submit.disabled = true;
     if (mode === "register") {
       if (data.password !== data.password_confirm) throw new ApiError("VALIDATION_ERROR", "兩次密碼不一致。");
-      await auth.register({ username: data.username, email: data.email, password: data.password, turnstile_token: turnstileToken });
+      await auth.register({ username: data.username, email: data.email, password: data.password });
     } else {
-      await auth.login({ username: data.identity, password: data.password, turnstile_token: turnstileToken });
+      const recaptchaToken = await recaptchaLoginToken();
+      await auth.login({ username: data.identity, password: data.password, recaptcha_token: recaptchaToken });
     }
     window.location.href = "./dashboard.html";
   } catch (error) {

@@ -105,6 +105,7 @@ const MOCK_TABLE = {
   "GET /prices/last-update": mockPrices.lastUpdate,
   "GET /skills":             mockSkills.listSkills,
   "GET /health":              async () => ({ service: "stock_hold", version: "mock" }),
+  "GET /auth/recaptcha-config": async () => ({ enabled: false, site_key: "" }),
 };
 
 /* ---------- Internal request ---------- */
@@ -260,6 +261,7 @@ export const accounts = {
 export const auth = {
   login: (body) => request("POST", "/auth/login", body),
   register: (body) => request("POST", "/auth/register", body),
+  recaptchaConfig: () => request("GET", "/auth/recaptcha-config"),
   logout: () => request("POST", "/auth/logout", {}),
   me: () => request("GET", "/auth/me"),
   updateProfile: (body) => request("POST", "/auth/profile", body),

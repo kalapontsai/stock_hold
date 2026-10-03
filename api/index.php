@@ -37,6 +37,13 @@ if ($method === 'GET' && $path === '/auth/session') {
     $user = current_user($pdo);
     envelope_ok(['csrf_token' => csrf_token(), 'authenticated' => $user !== null, 'user' => $user]);
 }
+if ($method === 'GET' && $path === '/auth/recaptcha-config') {
+    $recaptcha = recaptcha_enterprise_config();
+    envelope_ok([
+        'enabled' => $recaptcha['enabled'],
+        'site_key' => $recaptcha['site_key'],
+    ]);
+}
 
 if ($method === 'POST' && $path === '/auth/register') {
     require_csrf_token();
@@ -112,6 +119,9 @@ if ($method === 'POST' && $path === '/auth/login') {
             $update->execute([$attempts, $until, now_sql(), $user['id']]);
         }
         envelope_error('INVALID_CREDENTIALS', 'Username or password is incorrect.', 401);
+    }
+    if (recaptcha_assess_login((string)($input['recaptcha_token'] ?? '')) === false) {
+        envelope_error('RECAPTCHA_FAILED', 'Security verification failed. Please try again.', 403);
     }
     $pdo->prepare('UPDATE users SET failed_login_attempts=0,locked_until=NULL,updated_at=? WHERE id=?')->execute([now_sql(), $user['id']]);
     clear_login_limits($pdo, $ipKey);
