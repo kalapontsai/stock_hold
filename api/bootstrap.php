@@ -563,9 +563,11 @@ function verify_turnstile(string $token, ?string $remoteIp = null): bool
             $remoteIp ?? 'null'
         ));
     }
-    // Dev mode: Turnstile not configured -> skip verification.
-    if (!is_string($secret) || $secret === '' || !is_string($sitekey) || $sitekey === '') {
-        if ($debug) error_log('[sh-debug] verify_turnstile dev_mode=true (secret/sitekey empty) return=true');
+    // Dev mode: Turnstile not configured (or still contains a known placeholder)
+    // -> skip verification so local/test deployments do not get locked out.
+    if (!is_string($secret) || $secret === '' || is_known_placeholder($secret)
+        || !is_string($sitekey) || $sitekey === '' || is_known_placeholder($sitekey)) {
+        if ($debug) error_log('[sh-debug] verify_turnstile dev_mode=true (secret/sitekey empty or placeholder) return=true');
         return true;
     }
     // Production: token must be present.
