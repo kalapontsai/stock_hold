@@ -117,9 +117,8 @@ function security_headers(): void
 
     // === Permissions-Policy (formerly Feature-Policy) ===
     // Stock_hold has no use for any of these browser APIs. Denying them all
-    // means a compromised third-party script (e.g. a future Turnstile supply-
-    // chain attack) cannot silently request camera/mic/geo/etc. from the user.
-    // Turnstile widget does not need any of these — it is purely visual.
+    // means a compromised third-party script cannot silently request
+    // camera/mic/geo/etc. from the user.
     header('Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), accelerometer=(), gyroscope=(), magnetometer=(), serial=()');
 
     // === Cross-Origin isolation ===
@@ -131,19 +130,13 @@ function security_headers(): void
     header('Cross-Origin-Resource-Policy: same-origin');
 
     // === Content Security Policy ===
-    // F-12 fix: Turnstile integration needs three extra origins. Without these,
-    // the CSP would silently block the Turnstile widget script, iframe, and
-    // the (already server-side) siteverify call.
-    //
     // F-12.3 fix: Cloudflare Web Analytics (zone-level RUM) injects its
     // beacon script as <script src="https://static.cloudflareinsights.com/
     // beacon.min.js/..."> and POSTs samples to <zone>.insights.cloudflare.com.
     // Both are blocked without these additions.
     //
-    // Third-party origins are kept tight: only Cloudflare infrastructure
-    // (challenges.cloudflare.com for Turnstile, static.cloudflareinsights.com
-    // + *.insights.cloudflare.com for Web Analytics).
-    header("Content-Security-Policy: default-src 'self'; script-src 'self' https://challenges.cloudflare.com https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://challenges.cloudflare.com https://*.insights.cloudflare.com; frame-src 'self' https://challenges.cloudflare.com");
+    // Third-party origins are kept tight to Cloudflare Web Analytics.
+    header("Content-Security-Policy: default-src 'self'; script-src 'self' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://*.insights.cloudflare.com");
     // F-05 fix: HSTS so browsers refuse to downgrade HTTP→HTTPS after first
     // visit. 2 years + includeSubDomains + preload — operator must register
     // the domain at hstspreload.org to actually push to the browser list.
@@ -536,89 +529,6 @@ function audit_log_write(PDO $pdo, int $userId, string $action, ?string $ip = nu
         // bound values and table structure into the error log).
         error_log('audit_log_write failed: ' . get_class($e));
     }
-}
-
-// F-12 fix: verify a Cloudflare Turnstile token against the siteverify API.
-// Returns true if Turnstile is not configured (dev mode), true if the token
-// verifies successfully, false if the token is missing/invalid.
-//
-// Dev mode behavior: when STOCK_HOLD_TURNSTILE_SECRET is empty, the check is
-// skipped entirely. This makes local development possible without a Turnstile
-// key. Production MUST set both STOCK_HOLD_TURNSTILE_SITEKEY and SECRET.
-//
-// Security: HTTPS-only, no redirect following (F-08 fix), short timeouts so a
-// stalled Cloudflare call can't lock the auth flow.
-function verify_turnstile(string $token, ?string $remoteIp = null): bool
-{
-    $secret = env_value('STOCK_HOLD_TURNSTILE_SECRET');
-    $sitekey = env_value('STOCK_HOLD_TURNSTILE_SITEKEY');
-    // F-XX: debug instrumentation — opt-in via STOCK_HOLD_DEBUG=1 in .env.
-    $debug = env_value('STOCK_HOLD_DEBUG') === '1';
-    if ($debug) {
-        error_log(sprintf(
-            '[sh-debug] verify_turnstile token_len=%d secret_set=%s sitekey_set=%s remote_ip=%s',
-            strlen($token),
-            is_string($secret) && $secret !== '' ? '1' : '0',
-            is_string($sitekey) && $sitekey !== '' ? '1' : '0',
-            $remoteIp ?? 'null'
-        ));
-    }
-    // Dev mode: Turnstile not configured (or still contains a known placeholder)
-    // -> skip verification so local/test deployments do not get locked out.
-    if (!is_string($secret) || $secret === '' || is_known_placeholder($secret)
-        || !is_string($sitekey) || $sitekey === '' || is_known_placeholder($sitekey)) {
-        if ($debug) error_log('[sh-debug] verify_turnstile dev_mode=true (secret/sitekey empty or placeholder) return=true');
-        return true;
-    }
-    // Production: token must be present.
-    if ($token === '') {
-        if ($debug) error_log('[sh-debug] verify_turnstile token empty in prod mode return=false');
-        return false;
-    }
-
-    $postData = [
-        'secret' => $secret,
-        'response' => $token,
-    ];
-    if ($remoteIp !== null && $remoteIp !== '') {
-        $postData['remoteip'] = $remoteIp;
-    }
-
-    $ch = curl_init();
-    curl_setopt_array($ch, [
-        CURLOPT_URL => 'https://challenges.cloudflare.com/turnstile/v0/siteverify',
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => http_build_query($postData),
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 5,
-        CURLOPT_CONNECTTIMEOUT => 3,
-        CURLOPT_SSL_VERIFYPEER => true,
-        CURLOPT_FOLLOWLOCATION => false, // F-08 fix: never follow redirects
-        CURLOPT_PROTOCOLS => CURLPROTO_HTTPS,
-        CURLOPT_USERAGENT => 'stock_hold/2.0.0-apache (F-12 Turnstile verifier)',
-    ]);
-    $response = curl_exec($ch);
-    $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $curlErr = curl_errno($ch);
-    curl_close($ch);
-
-    if ($curlErr !== 0 || $httpCode !== 200 || !is_string($response) || $response === '') {
-        // Fail-closed: if we can't reach Cloudflare, reject. Operator will see
-        // this in error log and can decide whether to disable Turnstile.
-        if ($debug) error_log("[sh-debug] verify_turnstile cloudflare api fail curl_err=$curlErr http=$httpCode");
-        return false;
-    }
-
-    $data = json_decode($response, true);
-    if (!is_array($data)) {
-        if ($debug) error_log('[sh-debug] verify_turnstile response not JSON return=false');
-        return false;
-    }
-    $success = ($data['success'] ?? false) === true;
-    if ($debug) {
-        error_log('[sh-debug] verify_turnstile cloudflare success=' . ($success ? 'true' : 'false') . ' errors=' . json_encode($data['error-codes'] ?? []));
-    }
-    return $success;
 }
 
 function now_sql(): string
