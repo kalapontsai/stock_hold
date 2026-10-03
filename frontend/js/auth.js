@@ -4,43 +4,52 @@ const form = document.querySelector("#auth-form");
 const message = document.querySelector("#auth-message");
 const submit = document.querySelector("#auth-submit");
 let mode = "login";
-let recaptchaScriptPromise = null;
+let recaptchaPreparation = null;
 
-async function recaptchaLoginToken() {
-  const config = await auth.recaptchaConfig();
-  if (!config.enabled) return "";
+function prepareRecaptcha() {
+  if (!recaptchaPreparation) {
+    recaptchaPreparation = (async () => {
+      const config = await auth.recaptchaConfig();
+      if (!config.enabled || window.grecaptcha?.enterprise) return config;
 
-  if (!window.grecaptcha?.enterprise) {
-    if (!recaptchaScriptPromise) {
-      recaptchaScriptPromise = new Promise((resolve, reject) => {
+      await new Promise((resolve, reject) => {
         const script = document.createElement("script");
         script.src = `https://www.google.com/recaptcha/enterprise.js?render=${encodeURIComponent(config.site_key)}`;
         script.async = true;
         script.onload = resolve;
-        script.onerror = () => {
-          recaptchaScriptPromise = null;
-          reject(new ApiError("RECAPTCHA_LOAD_FAILED", "安全驗證載入失敗，請稍後再試。"));
-        };
+        script.onerror = () => reject(new ApiError("RECAPTCHA_LOAD_FAILED", "安全驗證載入失敗，請稍後再試。"));
         document.head.append(script);
       });
-    }
-    await recaptchaScriptPromise;
+
+      if (!window.grecaptcha?.enterprise) {
+        throw new ApiError("RECAPTCHA_LOAD_FAILED", "安全驗證載入失敗，請稍後再試。");
+      }
+      return config;
+    })();
+    recaptchaPreparation.catch(() => { recaptchaPreparation = null; });
   }
-  if (!window.grecaptcha?.enterprise) {
-    recaptchaScriptPromise = null;
-    throw new ApiError("RECAPTCHA_LOAD_FAILED", "安全驗證載入失敗，請稍後再試。");
-  }
+  return recaptchaPreparation;
+}
+
+async function recaptchaLoginToken() {
+  const config = await prepareRecaptcha();
+  if (!config.enabled) return "";
 
   return new Promise((resolve, reject) => {
     window.grecaptcha.enterprise.ready(async () => {
       try {
-        resolve(await window.grecaptcha.enterprise.execute(config.site_key, { action: "LOGIN" }));
+        resolve(await window.grecaptcha.enterprise.execute(config.site_key, { action: "login" }));
       } catch {
         reject(new ApiError("RECAPTCHA_EXECUTE_FAILED", "安全驗證失敗，請稍後再試。"));
       }
     });
   });
 }
+
+prepareRecaptcha().catch((error) => {
+  message.textContent = error?.message || "安全驗證初始化失敗，請稍後再試。";
+  message.hidden = false;
+});
 
 function setMode(next) {
   mode = next;

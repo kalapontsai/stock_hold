@@ -442,7 +442,7 @@ function recaptcha_assess_login(string $token): ?bool
         'event' => [
             'token' => $token,
             'siteKey' => $config['site_key'],
-            'expectedAction' => 'LOGIN',
+            'expectedAction' => 'login',
             'userAgent' => substr((string)($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 512),
         ],
     ], JSON_UNESCAPED_SLASHES);
@@ -477,14 +477,10 @@ function recaptcha_assess_login(string $token): ?bool
     $curlFailed = $response === false;
     curl_close($curl);
 
-    if (!$curlFailed && $status === 400) {
-        error_log(json_encode(['event' => 'stock_hold_recaptcha_rejected', 'reason' => 'invalid_request']));
-        return false;
-    }
     if ($curlFailed || $status < 200 || $status >= 300) {
         error_log(json_encode([
             'event' => 'stock_hold_recaptcha_unavailable',
-            'reason' => $curlFailed ? 'request_failed' : 'http_error',
+            'reason' => $curlFailed ? 'request_failed' : ($status === 400 ? 'invalid_assessment_request' : 'http_error'),
             'http_status' => $status,
         ]));
         return null;
@@ -492,8 +488,23 @@ function recaptcha_assess_login(string $token): ?bool
 
     $assessment = json_decode((string)$response, true);
     $tokenProperties = is_array($assessment) ? ($assessment['tokenProperties'] ?? null) : null;
-    if (!is_array($tokenProperties) || ($tokenProperties['valid'] ?? false) !== true
-        || ($tokenProperties['action'] ?? '') !== 'LOGIN') {
+    if (!is_array($tokenProperties) || ($tokenProperties['valid'] ?? false) !== true) {
+        error_log(json_encode([
+            'event' => 'stock_hold_recaptcha_rejected',
+            'reason' => 'invalid_token',
+            'invalid_reason' => is_array($tokenProperties)
+                ? (string)($tokenProperties['invalidReason'] ?? 'unspecified')
+                : 'missing_token_properties',
+        ]));
+        return false;
+    }
+    $action = (string)($tokenProperties['action'] ?? '');
+    if (strcasecmp($action, 'login') !== 0) {
+        error_log(json_encode([
+            'event' => 'stock_hold_recaptcha_rejected',
+            'reason' => 'action_mismatch',
+            'action' => $action !== '' ? $action : 'missing',
+        ]));
         return false;
     }
 
@@ -502,7 +513,16 @@ function recaptcha_assess_login(string $token): ?bool
         error_log(json_encode(['event' => 'stock_hold_recaptcha_unavailable', 'reason' => 'invalid_assessment']));
         return null;
     }
-    return (float)$score >= (float)$thresholdValue;
+    $allowed = (float)$score >= (float)$thresholdValue;
+    if (!$allowed) {
+        error_log(json_encode([
+            'event' => 'stock_hold_recaptcha_rejected',
+            'reason' => 'low_score',
+            'score' => (float)$score,
+            'threshold' => (float)$thresholdValue,
+        ]));
+    }
+    return $allowed;
 }
 
 function rate_limit_key(string $scope, string $value): string
