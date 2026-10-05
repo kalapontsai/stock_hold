@@ -317,7 +317,7 @@ function transaction_payload(PDO $pdo, int $userId, array $input, ?string $id = 
         }
     }
     $type = strtoupper((string)$input['type']);
-    $allowed = ['BUY','SELL','DIVIDEND','DEPOSIT','WITHDRAW','TRANSFER_IN','TRANSFER_OUT','FEE','SPLIT','MERGER','RIGHTS'];
+    $allowed = ['BUY','SELL','DIVIDEND','DEPOSIT','WITHDRAW','TRANSFER_IN','TRANSFER_OUT','SPLIT','MERGER','RIGHTS'];
     if (!in_array($type, $allowed, true)) {
         envelope_error('VALIDATION_ERROR', 'Transaction type is invalid.', 422);
     }
@@ -326,11 +326,11 @@ function transaction_payload(PDO $pdo, int $userId, array $input, ?string $id = 
     $fees = (float)decimal($input['fees'] ?? '0');
     $gross = ((float)($qty ?? 0)) * ((float)($price ?? 0));
     $net = $gross + $fees;
-    $negative = in_array($type, ['BUY','WITHDRAW','FEE','TRANSFER_OUT','RIGHTS'], true);
+    $negative = in_array($type, ['BUY','WITHDRAW','TRANSFER_OUT','RIGHTS'], true);
     $amount = array_key_exists('amount', $input) && $input['amount'] !== null && $input['amount'] !== ''
         ? (float)decimal($input['amount'])
         : ($negative ? -1 : 1) * $net;
-    if (in_array($type, ['BUY','WITHDRAW','FEE','TRANSFER_OUT','RIGHTS'], true)) {
+    if (in_array($type, ['BUY','WITHDRAW','TRANSFER_OUT','RIGHTS'], true)) {
         $amount = -abs($amount);
     } elseif (in_array($type, ['SELL','DEPOSIT','DIVIDEND','TRANSFER_IN'], true)) {
         $amount = abs($amount);
@@ -617,7 +617,7 @@ if ($method === 'POST' && $path === '/transactions/reverse') {
     if (!$old) envelope_error('NOT_FOUND', 'Transaction does not exist.', 404);
     $pdo->beginTransaction();
     $insert = $pdo->prepare('INSERT INTO transactions (id,account_id,security_id,txn_date,type,qty,price,fees,currency,fx_rate,amount,note,created_at,updated_at,user_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
-    $reverseType = $old['type'] === 'BUY' ? 'SELL' : ($old['type'] === 'SELL' ? 'BUY' : 'FEE');
+    $reverseType = $old['type'] === 'BUY' ? 'SELL' : ($old['type'] === 'SELL' ? 'BUY' : 'WITHDRAW');
     $insert->execute([uuid(),$old['account_id'],$old['security_id'],gmdate('Y-m-d'),$reverseType,$old['qty'],$old['price'],$old['fees'],$old['currency'],$old['fx_rate'],-$old['amount'],'Reversal of '.$old['id'],now_sql(),now_sql(),$userId]);
     if ($old['security_id']) rebuild_position($pdo, $userId, $old['account_id'], $old['security_id']);
     $pdo->commit();

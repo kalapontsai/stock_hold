@@ -12,7 +12,7 @@ import { createDataTable } from "../components/data-table.js";
 import { createModal, confirmDialog, toast } from "../components/modal.js";
 import { createCurrencyInput } from "../components/currency-input.js";
 
-const TYPE_KEYS = ["BUY","SELL","DIVIDEND","DEPOSIT","WITHDRAW","TRANSFER_IN","TRANSFER_OUT","FEE","SPLIT","MERGER","RIGHTS"];
+const TYPE_KEYS = ["BUY","SELL","DIVIDEND","DEPOSIT","WITHDRAW","TRANSFER_IN","TRANSFER_OUT","SPLIT","MERGER","RIGHTS"];
 
 // Pagination: page-size selector (default 25, persists per device). Page size
 // cap mirrors the server-side cap (api/index.php in GET /transactions) so the
@@ -366,8 +366,8 @@ export async function mountTransactions(root) {
     form.noValidate = true;
 
     // Bank ↔ Stock toggle：依類別顯示對應的 type 集合，並決定 qty/price/symbol/amount 欄位是否啟用。
-    const BANK_TYPES = ["DEPOSIT","WITHDRAW","TRANSFER_IN","TRANSFER_OUT","FEE"];
-    const STOCK_TYPES = ["BUY","SELL","DIVIDEND","SPLIT","MERGER","RIGHTS"];
+    const BANK_TYPES = ["DEPOSIT","WITHDRAW","TRANSFER_IN","TRANSFER_OUT","DIVIDEND"];
+    const STOCK_TYPES = ["BUY","SELL","SPLIT","MERGER","RIGHTS"];
     const typesForCategory = (cat) => (cat === "bank" ? BANK_TYPES : STOCK_TYPES);
     const isBankType = (k) => BANK_TYPES.includes(k);
     const initialAccount =
@@ -842,7 +842,7 @@ function symbolOf(list, id) {
 }
 function typeBadgeClass(type) {
   if (type === "BUY" || type === "DEPOSIT" || type === "TRANSFER_IN") return "badge--positive";
-  if (type === "SELL" || type === "WITHDRAW" || type === "TRANSFER_OUT" || type === "FEE") return "badge--negative";
+  if (type === "SELL" || type === "WITHDRAW" || type === "TRANSFER_OUT") return "badge--negative";
   if (type === "DIVIDEND") return "badge--info";
   if (type === "RIGHTS") return "badge--info";
   return "badge--neutral";
@@ -854,7 +854,7 @@ function computeAmount(row) {
     return prefix + formatMoney(String(amount), "TWD", { decimals: 0 }).replace(/^NT\$ /, "");
   };
   if (row.type === "DEPOSIT" || row.type === "TRANSFER_IN") return signed(row.amount, true);
-  if (row.type === "WITHDRAW" || row.type === "TRANSFER_OUT" || row.type === "FEE") return signed(row.amount, false);
+  if (row.type === "WITHDRAW" || row.type === "TRANSFER_OUT") return signed(row.amount, false);
   if (row.type === "DIVIDEND") return signed(Number(row.qty || 0) * Number(row.price || 0), true);
   if (row.type === "BUY" || row.type === "RIGHTS") return signed(Number(row.qty || 0) * Number(row.price || 0), false);
   if (row.type === "SELL") return signed(Number(row.qty || 0) * Number(row.price || 0), true);

@@ -1,7 +1,7 @@
 /**
  * stock_hold — Mock: Transactions (per SPEC §1.1 entity)
  *
- * Includes BUY, SELL, DIVIDEND, DEPOSIT, WITHDRAW, FEE — enough variety to
+ * Includes BUY, SELL, DIVIDEND, DEPOSIT, WITHDRAW — enough variety to
  * demo filter chips, sort, and the dual-currency display in Holdings.
  */
 
@@ -14,7 +14,7 @@ const TXNS = [
   { id: "tx-0006", account_id: "acc-bank-sinopac", txn_date: "2026-09-15", type: "DIVIDEND",  security_id: "sec-00878", qty: "5000", price: "0.40",   fees: "0",     fx_rate: "1.0000", note: "Q3 配息" },
   { id: "tx-0007", account_id: "acc-bank-ctbc",    txn_date: "2026-09-12", type: "BUY",       security_id: "sec-2330",  qty: "1000", price: "545.00", fees: "20.00", fx_rate: "1.0000", note: "台積電加碼" },
   { id: "tx-0008", account_id: "acc-broker-firstsec", txn_date: "2026-09-10", type: "BUY",    security_id: "sec-aapl",  qty: "20",   price: "175.00", fees: "1.00",  fx_rate: "31.8000", note: "建倉" },
-  { id: "tx-0009", account_id: "acc-bank-ctbc",    txn_date: "2026-09-05", type: "FEE",       security_id: null,        qty: null,  price: null,    fees: "100",   fx_rate: "1.0000", note: "月費" },
+  { id: "tx-0009", account_id: "acc-bank-ctbc",    txn_date: "2026-09-05", type: "WITHDRAW",  security_id: null,        qty: null,  price: null,    fees: "100",   fx_rate: "1.0000", note: "月費" },
   { id: "tx-0010", account_id: "acc-broker-firstsec", txn_date: "2026-09-01", type: "DIVIDEND", security_id: "sec-aapl", qty: "30",   price: "0.24",   fees: "0",     fx_rate: "31.5000", note: "USD 配息 0.24/股" },
   { id: "tx-0011", account_id: "acc-bank-ctbc",    txn_date: "2026-08-28", type: "WITHDRAW",  security_id: null,        qty: null,  price: null,    fees: "0",     fx_rate: "1.0000", note: "提款" },
   { id: "tx-0012", account_id: "acc-bank-sinopac", txn_date: "2026-08-20", type: "BUY",       security_id: "sec-0056",  qty: "5000", price: "33.40",  fees: "0",     fx_rate: "1.0000", note: "" },
@@ -42,7 +42,7 @@ const TXNS = [
 
 const TYPE_SORT = {
   BUY: 1, SELL: 2, DIVIDEND: 3, DEPOSIT: 4, WITHDRAW: 5,
-  TRANSFER_IN: 6, TRANSFER_OUT: 7, FEE: 8, SPLIT: 9, MERGER: 10,
+  TRANSFER_IN: 6, TRANSFER_OUT: 7, SPLIT: 8, MERGER: 9,
 };
 
 export async function listTransactions({ query } = {}) {
