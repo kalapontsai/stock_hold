@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-const STOCK_HOLD_VERSION = '2.0.0-apache';
+const STOCK_HOLD_VERSION = '2.1.1';
 
 function env_value(string $key, ?string $default = null): ?string
 {
@@ -745,7 +745,7 @@ function update_cache_put(PDO $pdo, string $endpoint, ?string $etag, string $pay
 }
 
 // Strip pre-release tag and convert "1.2.3-foo" → [1,2,3]. Treats the
-// environment suffix (e.g. "2.0.0-apache") as equivalent to the bare
+// environment suffix (e.g. "2.1.1-apache") as equivalent to the bare
 // version. Adequate for our use case; we don't need full semver precedence.
 function version_tuple(string $v): array
 {
