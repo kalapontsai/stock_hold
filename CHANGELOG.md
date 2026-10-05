@@ -1,8 +1,8 @@
 # Changelog
 
-本檔記錄 stock_hold 的所有重要變更。格式參考 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)。
+本檔記錄 stock_hold 的所有重要變更。格式參考 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/),版本遵循 [Semantic Versioning](https://semver.org/lang/zh-TW/)。
 
-## [Unreleased]
+## [1.0.0] - 2026-10-05
 
 ### Changed
 - 修正「新增交易」交易類別分類:
