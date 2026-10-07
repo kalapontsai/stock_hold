@@ -100,3 +100,20 @@ export async function deleteAccount({ body } = {}) {
   account.status = "disabled";
   return { id: account.id, deleted: true, status: account.status };
 }
+
+// Hard delete (mirrors /accounts/delete on the backend). The backend
+// refuses with ACCOUNT_HAS_TRANSACTIONS when transactions reference this
+// account; the mock keeps a per-account flag so the UI can be exercised
+// in both branches without real data.
+export async function hardDeleteAccount({ body } = {}) {
+  const idx = ACCOUNTS.findIndex((item) => item.id === body.id);
+  if (idx === -1) throw new Error("帳戶不存在");
+  if (ACCOUNTS[idx].txCount && ACCOUNTS[idx].txCount > 0) {
+    const err = new Error("帳戶有交易紀錄，無法刪除");
+    err.code = "ACCOUNT_HAS_TRANSACTIONS";
+    err.detail = { count: ACCOUNTS[idx].txCount, account_id: body.id, account_name: ACCOUNTS[idx].name };
+    throw err;
+  }
+  ACCOUNTS.splice(idx, 1);
+  return { id: body.id, deleted: true };
+}

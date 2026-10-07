@@ -499,6 +499,58 @@ if ($method === 'POST' && $path === '/accounts/disable') {
     $stmt->execute([now_sql(), $input['id'], $userId]);
     envelope_ok(['id' => $input['id'], 'deleted' => $stmt->rowCount() > 0, 'status' => 'INACTIVE']);
 }
+if ($method === 'POST' && $path === '/accounts/delete') {
+    // Hard-delete an account that has NO transactions. Distinct from
+    // /accounts/disable (which only marks status='INACTIVE' and keeps the
+    // row for historical context). This endpoint is destructive — the row
+    // is gone afterwards — so it MUST refuse to run when transactions exist.
+    require_fields($input, ['id']);
+    $accountId = (string)$input['id'];
+
+    $stmt = $pdo->prepare('SELECT id, name FROM accounts WHERE id=? AND user_id=?');
+    $stmt->execute([$accountId, $userId]);
+    $account = $stmt->fetch();
+    if (!$account) {
+        envelope_error('NOT_FOUND', 'Account does not exist.', 404);
+    }
+
+    // Safety check: count transactions referencing this account. We block
+    // deletion when there's at least one; the user has to either disable
+    // the account (status=INACTIVE) or remove the transactions first.
+    $txCountStmt = $pdo->prepare('SELECT COUNT(*) FROM transactions WHERE user_id=? AND account_id=?');
+    $txCountStmt->execute([$userId, $accountId]);
+    $txCount = (int)$txCountStmt->fetchColumn();
+    if ($txCount > 0) {
+        // F-XX: surface the precise current state (count + name) so the user
+        // can decide whether to disable instead of delete, or fix the data.
+        envelope_error(
+            'ACCOUNT_HAS_TRANSACTIONS',
+            sprintf('帳戶「%s」有 %d 筆交易紀錄，無法刪除。請改用「停用」或先移除交易。', $account['name'], $txCount),
+            422,
+            ['count' => $txCount, 'account_id' => $accountId, 'account_name' => (string)$account['name']],
+        );
+    }
+
+    // Also defensively clean up positions for this account. Positions are
+    // rebuilt from transactions, so they should already be empty if the tx
+    // count is zero — but we don't want a stale row surviving the deletion.
+    $pdo->beginTransaction();
+    try {
+        $posStmt = $pdo->prepare('DELETE FROM positions WHERE user_id=? AND account_id=?');
+        $posStmt->execute([$userId, $accountId]);
+        $accStmt = $pdo->prepare('DELETE FROM accounts WHERE user_id=? AND id=?');
+        $accStmt->execute([$userId, $accountId]);
+        if ($accStmt->rowCount() === 0) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            envelope_error('NOT_FOUND', 'Account does not exist.', 404);
+        }
+        $pdo->commit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        throw $e;
+    }
+    envelope_ok(['id' => $accountId, 'deleted' => true]);
+}
 
 if ($method === 'GET' && $path === '/securities') {
     $stmt = $pdo->prepare('SELECT id,symbol,exchange,currency,name,type,sector,is_active,created_at,updated_at FROM securities WHERE is_active=1 AND user_id=? ORDER BY symbol');

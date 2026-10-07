@@ -415,7 +415,8 @@ function buildAccountsTable(accounts, refresh) {
         const isInactive = String(r.status).toLowerCase() !== "active";
         // 仍列出刪除按鈕，但停用中的帳戶明確標示，刪除按鈕文字與行為都對齊「停用」語意
         return `<button type="button" class="btn btn--ghost btn--sm" data-edit="${escapeHtml(r.id)}">${escapeHtml(t("action.edit"))}</button>
-           <button type="button" class="btn btn--ghost btn--sm" data-del="${escapeHtml(r.id)}" ${isInactive ? "disabled" : ""}>${escapeHtml(t("set.acc.action.disable"))}</button>`;
+           <button type="button" class="btn btn--ghost btn--sm" data-del="${escapeHtml(r.id)}" ${isInactive ? "disabled" : ""}>${escapeHtml(t("set.acc.action.disable"))}</button>
+           <button type="button" class="btn btn--ghost btn--sm btn--danger" data-delete="${escapeHtml(r.id)}">${escapeHtml(t("set.acc.action.delete"))}</button>`;
       } },
     ],
     data: accounts,
@@ -427,6 +428,7 @@ function buildAccountsTable(accounts, refresh) {
   tbl.el.addEventListener("click", async (e) => {
     const editId = e.target.closest("[data-edit]")?.dataset.edit;
     const delId = e.target.closest("[data-del]")?.dataset.del;
+    const deleteId = e.target.closest("[data-delete]")?.dataset.delete;
     if (editId) openAccountModal(accounts.find(a => a.id === editId), accounts, refresh);
     if (delId) {
       const target = accounts.find(a => a.id === delId);
@@ -451,8 +453,47 @@ function buildAccountsTable(accounts, refresh) {
         }
       }
     }
+    if (deleteId) handleAccountDelete(deleteId, accounts, refresh);
   });
   return tbl.el;
+}
+
+// Hard-delete an account. Backend is the source of truth: it refuses
+// (ACCOUNT_HAS_TRANSACTIONS, 422) when any transaction references this
+// account. The frontend mirrors that constraint with an explicit alarm
+// so the user sees the precise current state instead of a generic error.
+async function handleAccountDelete(accountId, accounts, refresh) {
+  const target = accounts.find(a => a.id === accountId);
+  if (!target) {
+    toast(t("set.acc.confirmDelete.notFound"), { tone: "error" });
+    return;
+  }
+  const ok = await confirmDialog({
+    title: t("set.acc.confirmDelete.title"),
+    body: t("set.acc.confirmDelete.body", { name: target.name }),
+    confirmLabel: t("set.acc.action.delete"),
+    confirmTone: "danger",
+  });
+  if (!ok) return;
+  try {
+    await api.accounts.delete(accountId);
+    toast(t("deleted"), { tone: "success" });
+    await refresh();
+  } catch (e) {
+    // The safety contract: backend already counted the transactions; we
+    // surface that count verbatim so the user can fix it (remove tx or
+  // disable instead) without guessing.
+    if (e?.code === "ACCOUNT_HAS_TRANSACTIONS") {
+      const count = Number(e?.detail?.count ?? 0);
+      toast(t("set.acc.delete.hasTransactions.body", { count }), {
+        tone: "error",
+        title: t("set.acc.delete.hasTransactions.title"),
+        durationMs: 6000,
+      });
+      return;
+    }
+    toast(e?.message || "刪除帳戶失敗", { tone: "error" });
+  }
 }
 
 function buildSecuritiesTable(securities, refresh) {

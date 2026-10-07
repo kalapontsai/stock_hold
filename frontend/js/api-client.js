@@ -79,7 +79,7 @@ const MOCK_TABLE = {
   "GET /accounts/{id}":      mockAccounts.getAccount,
   "POST /accounts/create":   mockAccounts.createAccount,
   "POST /accounts/update":   mockAccounts.updateAccount,
-  "POST /accounts/delete":   mockAccounts.deleteAccount,
+  "POST /accounts/delete":   mockAccounts.hardDeleteAccount,
   "POST /accounts/disable":  mockAccounts.deleteAccount,
   "GET /securities":         mockSecurities.listSecurities,
   "GET /securities/{id}":    mockSecurities.getSecurity,
@@ -255,6 +255,9 @@ export const accounts = {
   create: (body) => request("POST", "/accounts/create", body),
   update: (id, body) => request("POST", "/accounts/update", { ...body, id }),
   remove: (id) => request("POST", "/accounts/disable", { id }),
+  // Hard delete — backend refuses when transactions reference the account.
+  // Error code: ACCOUNT_HAS_TRANSACTIONS, detail.count = current tx count.
+  delete: (id) => request("POST", "/accounts/delete", { id }),
 };
 
 /* Authentication */

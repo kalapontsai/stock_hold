@@ -150,6 +150,12 @@ const STRINGS = {
     "txn.category.stock":         "Brokerage",
     "set.acc.action.disable":     "Disable",
     "set.acc.action.enable":      "Enable",
+    "set.acc.action.delete":        "Delete",
+    "set.acc.confirmDelete.title":  "Delete account",
+    "set.acc.confirmDelete.body":   "Deleting account '{name}' permanently removes this record and cannot be undone. Make sure no transactions or positions link to it.",
+    "set.acc.confirmDelete.notFound": "Account not found — it may already be deleted.",
+    "set.acc.delete.hasTransactions.title": "Cannot delete: account has transactions",
+    "set.acc.delete.hasTransactions.body":  "This account has {count} transaction record(s) and cannot be removed. Either disable it instead, or delete the records from the Transactions page first.",
     "set.acc.filter.showDisabled":  "Show disabled accounts",
 
     /* Holdings */
