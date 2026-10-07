@@ -529,6 +529,59 @@ function persist_prices(PDO $pdo, array $items): array
     return ['updated' => $updated, 'failed' => $failed];
 }
 
+// Fubon Neo API quote fetcher.
+//
+// Plumbing layer: reads the user's encrypted fubon_api_key (set via
+// Settings -> API Token -> External API Keys) and is responsible for the
+// dispatch contract (returns per-row failed entries so the UI can show
+// what got skipped).
+//
+// Why this returns 501 today: fubon_neo is a binary SDK that needs
+// `apikey_login(personal_id, api_key, cert_path, cert_pass)` — none of
+// which can be invoked from PHP. Full integration needs a separate
+// Python worker (see D:\Python\venv\fubon_api\SKILL.md); until that
+// worker is deployed we surface the gap with a precise error code so
+// the UI / log can react instead of silently failing.
+function fetch_fubon_quotes(PDO $pdo, int $userId, array $securities): array
+{
+    if ($userId <= 0) {
+        envelope_error('INVALID_REQUEST', 'Cannot determine user for Fubon quote fetch.', 422);
+    }
+
+    $stmt = $pdo->prepare('SELECT key_ciphertext, key_iv, key_prefix FROM extension_api_keys WHERE user_id=? AND provider=?');
+    $stmt->execute([$userId, 'fubon_api_key']);
+    $row = $stmt->fetch();
+    if (!$row) {
+        envelope_error(
+            'FUBON_API_KEY_MISSING',
+            '尚未設定 fubon_api_key。請至「設定 → ④ API Token → 外部 API 金鑰」填入 fubon_api_key 後重試。',
+            422,
+            ['provider' => 'fubon_api_key', 'anchor' => '#token'],
+        );
+    }
+
+    $apiKey = extension_key_decrypt((string)$row['key_ciphertext'], (string)$row['key_iv']);
+    if ($apiKey === null || $apiKey === '') {
+        envelope_error(
+            'FUBON_API_KEY_DECRYPT_FAILED',
+            '無法解密 fubon_api_key；加密金鑰可能已被輪換，請重新填入。',
+            500,
+            ['provider' => 'fubon_api_key', 'key_prefix' => (string)$row['key_prefix']],
+        );
+    }
+
+    // See header docblock for the why. Surfaced as a hard 501 so the UI
+    // can show a clear "not yet implemented" message rather than a
+    // half-working provider that silently skips symbols.
+    envelope_error(
+        'FUBON_PROVIDER_NOT_IMPLEMENTED',
+        'Fubon Neo API 整合需要 Python service（binary SDK 限制，詳見 D:\\Python\\venv\\fubon_api\\SKILL.md）。' .
+        'stock_hold PHP 後端目前無法直接呼叫 fubon_neo SDK，請部署獨立 Python worker 或改用 twse_mis。',
+        501,
+        ['provider' => 'fubon_api_key', 'key_prefix' => (string)$row['key_prefix'], 'securities_count' => count($securities)],
+    );
+}
+
 function fetch_twse_mis_quotes(PDO $pdo, array $securities): array
 {
     if (!function_exists('curl_init')) {
@@ -1178,7 +1231,7 @@ if ($method === 'GET' && $path === '/settings/quotes') {
 }
 if ($method === 'POST' && $path === '/settings/quotes') {
     $provider = (string)($input['provider'] ?? 'twse_mis');
-    if (!in_array($provider, ['twse_mis', 'manual'], true)) envelope_error('VALIDATION_ERROR', 'Unsupported quote provider.', 422);
+    if (!in_array($provider, ['twse_mis', 'manual', 'fubon'], true)) envelope_error('VALIDATION_ERROR', 'Unsupported quote provider.', 422);
     $interval = (int)($input['interval_minutes'] ?? app_setting($pdo, 'quotes.interval_minutes', '15'));
     if ($interval < 1 || $interval > 1440) envelope_error('VALIDATION_ERROR', 'Interval must be between 1 and 1440 minutes.', 422);
     $enabled = array_key_exists('enabled', $input)
@@ -1205,7 +1258,8 @@ if ($method === 'POST' && $path === '/prices/batch-update') {
     $items = $input['prices'] ?? $input['items'] ?? [];
     if ($hasManualItems && !is_array($items)) envelope_error('VALIDATION_ERROR', 'prices must be an array.', 422);
     if (!$hasManualItems || count($items) === 0) {
-        if (app_setting($pdo, 'quotes.provider', 'twse_mis') === 'manual') envelope_error('QUOTE_PROVIDER_MANUAL', 'Quote provider is set to manual.', 422);
+        $provider = app_setting($pdo, 'quotes.provider', 'twse_mis');
+        if ($provider === 'manual') envelope_error('QUOTE_PROVIDER_MANUAL', 'Quote provider is set to manual.', 422);
         $symbols = $input['symbols'] ?? [];
         $sql = 'SELECT id,symbol,exchange,currency,user_id FROM securities WHERE is_active=1 AND user_id=?';
         $params = [$userId];
@@ -1215,7 +1269,12 @@ if ($method === 'POST' && $path === '/prices/batch-update') {
             $params = array_values($symbols);
         }
         $stmt = $pdo->prepare($sql); $stmt->execute($params);
-        envelope_ok(fetch_twse_mis_quotes($pdo, $stmt->fetchAll()));
+        $securities = $stmt->fetchAll();
+        if ($provider === 'fubon') {
+            envelope_ok(fetch_fubon_quotes($pdo, $userId, $securities));
+        } else {
+            envelope_ok(fetch_twse_mis_quotes($pdo, $securities));
+        }
     }
     foreach ($items as $item) {
         if (!is_array($item) || empty($item['security_id'])) {

@@ -232,8 +232,10 @@ export async function mountSettings(root) {
       <label class="form-field__label" for="quote-provider">報價來源</label>
       <select class="select" id="quote-provider">
         <option value="twse_mis">台灣證交所 MIS（免 API key）</option>
+        <option value="fubon">Fubon Neo API（需 fubon_api_key）</option>
         <option value="manual">手動匯入</option>
       </select>
+      <span class="form-field__hint" data-quote-provider-hint></span>
     </div>
     <div style="display:flex; gap:var(--space-3); align-items:center; flex-wrap:wrap;">
       <button type="button" class="btn btn--primary" data-action="save-quotes">儲存設定</button>
@@ -242,6 +244,47 @@ export async function mountSettings(root) {
     </div>
   `;
   quoteSection.querySelector("#quote-provider").value = quoteSettings.provider;
+
+  // When the user switches the provider to Fubon, remind them that the
+  // external API key (fubon_api_key) must already be configured under
+  // Settings -> API Token -> External API Keys. We don't BLOCK the save
+  // — they may want to flip the setting now and add the key later — but
+  // we surface the requirement clearly so they don't get a cryptic
+  // 501 on first refresh attempt.
+  const providerHint = quoteSection.querySelector("[data-quote-provider-hint]");
+  function paintProviderHint(provider) {
+    providerHint.textContent = provider === "fubon" ? t("set.quotes.fubon.providerHint") : "";
+  }
+  paintProviderHint(quoteSettings.provider);
+
+  quoteSection.querySelector("#quote-provider").addEventListener("change", async (event) => {
+    const newValue = event.target.value;
+    paintProviderHint(newValue);
+    if (newValue !== "fubon") return;
+    try {
+      const extKeys = await api.extensionKeys.list();
+      const hasKey = extKeys.some((k) => k.provider === "fubon_api_key");
+      if (hasKey) return; // already configured, no reminder needed
+      const goToToken = await confirmDialog({
+        title: t("set.quotes.fubon.noKey.title"),
+        body: t("set.quotes.fubon.noKey.body"),
+        confirmLabel: t("set.quotes.fubon.noKey.goToken"),
+        cancelLabel: t("set.quotes.fubon.noKey.later"),
+        confirmTone: "primary",
+      });
+      if (goToToken) {
+        const target = document.getElementById("token");
+        if (target) {
+          target.scrollIntoView({ behavior: "smooth", block: "start" });
+          const extKeyInput = target.querySelector("#ext-key");
+          if (extKeyInput) setTimeout(() => extKeyInput.focus({ preventScroll: true }), 320);
+        }
+      }
+    } catch (e) {
+      // Non-blocking — surface the real error on first refresh attempt.
+    }
+  });
+
   quoteSection.querySelector("[data-action=save-quotes]").addEventListener("click", async () => {
     try {
       await api.quoteSettings.update({
