@@ -370,6 +370,11 @@ export async function mountTransactions(root) {
     const STOCK_TYPES = ["BUY","SELL","SPLIT","MERGER","RIGHTS"];
     const typesForCategory = (cat) => (cat === "bank" ? BANK_TYPES : STOCK_TYPES);
     const isBankType = (k) => BANK_TYPES.includes(k);
+    // 配息 / 轉入 / 轉出雖然歸在 bank 類別（現金流），但仍可能與特定標的掛勾；
+    // 這幾型允許選擇標的（選填），方便記錄「是哪支股票配的息」或
+    // 「轉帳對應的股票」。其他 bank 類型（DEPOSIT/WITHDRAW）則保持隱藏標的欄。
+    const STOCK_LINKED_BANK_TYPES = ["TRANSFER_IN", "TRANSFER_OUT", "DIVIDEND"];
+    const isStockLinkedBank = (k) => STOCK_LINKED_BANK_TYPES.includes(k);
     const initialAccount =
       (row && accounts.find(a => a.id === row.account_id)) ||
       accounts.find(a => String(a.status).toLowerCase() === "active") ||
@@ -492,8 +497,10 @@ export async function mountTransactions(root) {
       const amtInput = form.querySelector("#txn-amount");
 
       if (cat === "bank") {
-        symField.hidden = true;
-        symSel.disabled = true;
+        // bank 類別隱藏 qty/price 但對配息/轉入/轉出開放選填標的
+        const showSymbol = isStockLinkedBank(type);
+        symField.hidden = !showSymbol;
+        symSel.disabled = !showSymbol;
         symSel.required = false;
         symLabel.classList.remove("form-field__label--required");
         stockGrid.hidden = true;

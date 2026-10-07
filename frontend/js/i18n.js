@@ -120,7 +120,7 @@ const STRINGS = {
     "txn.category.label":         "交易類別",
     "txn.category.bank":          "銀行",
     "txn.category.stock":         "證卷",
-    "txn.note.divHint":           "DIV 類型將自動寫入 dividends 表，amount_per_share = 價格 × 數量",
+    "txn.note.divHint":           "選填標的：標註配息來自哪支股票；金額欄填總現金",
     "txn.qty.unit":               "股 / 單位",
     "txn.empty":                  "這段時間沒有交易",
     "txn.empty.clear":            "清除篩選",
