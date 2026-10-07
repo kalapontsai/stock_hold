@@ -59,13 +59,14 @@ export async function mountDashboard(root) {
   });
 
   // --- Load all dashboard data in parallel ---
-  let summary, allocation, recent, lastUpdate;
+  let summary, allocation, recent, lastUpdate, health;
   try {
-    [summary, allocation, recent, lastUpdate] = await Promise.all([
+    [summary, allocation, recent, lastUpdate, health] = await Promise.all([
       api.dashboard.summary(),
       api.dashboard.allocation(),
       api.dashboard.recent({ limit: 5 }),
       api.maintenance.lastPriceUpdate(),
+      api.rawRequest("GET", "/health").catch(() => null),
     ]);
   } catch (e) {
     toast(t("error.server"), { tone: "error", title: e.code || "Error" });
@@ -75,6 +76,15 @@ export async function mountDashboard(root) {
   if (lastUpdate?.as_of) {
     asOfEl.textContent = t("metric.dataAsOf", { ts: formatDateTime(lastUpdate.as_of) });
   }
+
+  // --- Build / version / last-update footer + meta tags ---
+  // Single source of truth: the backend's /health.version constant and the
+  // latest prices.created_at (already loaded above as lastUpdate). The HTML
+  // ships placeholders so the layout doesn't jump on hydration; we just fill
+  // them in now.
+  const version = (health && typeof health.version === "string") ? health.version : "—";
+  const lastUpdateIso = lastUpdate?.as_of || null;
+  applyAppMeta(version, lastUpdateIso);
 
   // --- 3 metric cards ---
   const totalAssetsDelta = summary.total_assets_prev
@@ -199,6 +209,28 @@ function pageHref(page) {
   return document.body?.dataset?.rootEntry === "true"
     ? `./frontend/${page}.html`
     : `./${page}.html`;
+}
+
+/**
+ * Write build version + last-update timestamp into the footer AND the
+ * matching <meta name="app:version"> / <meta name="app:last-update">
+ * tags. The footer is what users see; the meta tags are for devtools /
+ * crawlers (filled at the same moment so both stay consistent).
+ */
+function applyAppMeta(version, lastUpdateIso) {
+  const versionSafe = String(version || "—");
+  const updateSafe = lastUpdateIso ? formatDateTime(lastUpdateIso) : "—";
+
+  const targets = document.querySelectorAll("[data-app-version]");
+  targets.forEach((el) => {
+    if (el.tagName === "META") el.setAttribute("content", versionSafe);
+    else el.textContent = `v${versionSafe}`;
+  });
+  const updateTargets = document.querySelectorAll("[data-app-last-update]");
+  updateTargets.forEach((el) => {
+    if (el.tagName === "META") el.setAttribute("content", lastUpdateIso || "");
+    else el.textContent = `最後更新：${updateSafe}`;
+  });
 }
 
 function delta(current, previous) {

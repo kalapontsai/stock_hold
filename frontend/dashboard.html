@@ -6,6 +6,9 @@
   <title>總覽 Dashboard · stock_hold</title>
   <meta name="description" content="資產總覽、今日損益、配置圖與最近交易">
   <meta name="color-scheme" content="light dark">
+  <!-- Build metadata; content filled at runtime from /health + last price update. -->
+  <meta name="app:version" content="" data-app-version>
+  <meta name="app:last-update" content="" data-app-last-update>
   <link rel="icon" href="../favicon.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -26,6 +29,11 @@
       </div>
     </main>
     <div class="app__tabbar"></div>
+    <footer class="app__meta" data-app-meta aria-label="應用版本與最後更新">
+      <span class="app__meta-version" data-app-version>v—</span>
+      <span class="app__meta-sep" aria-hidden="true">·</span>
+      <span class="app__meta-update" data-app-last-update>—</span>
+    </footer>
   </div>
   <noscript>
     <div style="padding: var(--space-6); text-align: center;">
