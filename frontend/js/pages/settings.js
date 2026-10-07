@@ -214,6 +214,14 @@ export async function mountSettings(root) {
   });
   tokenHost.appendChild(createBtn);
   await loadTokens();
+
+  // ──────── Extension (External) API Keys under the same token section ────────
+  // Distinct from api_tokens above (those are stock_hold's own hashed auth
+  // tokens). This subsection stores per-user credentials the SERVER uses to
+  // call OUT to external providers (Fubon Neo API first). Encrypted at rest;
+  // the API never returns the plaintext after the initial write.
+  tokenHost.appendChild(buildExtensionKeysBlock());
+
   sections.appendChild(tokenSection);
 
   // ───────── 5. Quote updates ─────────
@@ -738,3 +746,134 @@ function openSecurityModal(row, securities, refresh) {
 }
 
 function escapeHtml_REMOVED() { /* moved to utils/escape-html.js (H-4) */ }
+
+/* --------- External API keys (per-user, per-provider) --------- */
+function buildExtensionKeysBlock() {
+  const root = document.createElement("div");
+  root.className = "extension-keys";
+  root.style.marginTop = "var(--space-4)";
+  root.innerHTML = `
+    <hr style="border:none; border-top:1px solid var(--color-border); margin: var(--space-4) 0;">
+    <h3 style="font-size: var(--text-base); margin: 0 0 var(--space-2) 0;">${escapeHtml(t("set.token.ext.title"))}</h3>
+    <p class="form-field__hint">${escapeHtml(t("set.token.ext.hint"))}</p>
+    <div data-ext-list></div>
+    <form data-ext-form style="margin-top: var(--space-3); max-width: 640px;">
+      <div class="grid grid--two">
+        <div class="form-field">
+          <label class="form-field__label" for="ext-provider">${escapeHtml(t("set.token.ext.provider"))}</label>
+          <select class="select" id="ext-provider" name="provider">
+            <option value="fubon_api_key">${escapeHtml(t("set.token.ext.provider.fubon_api_key"))}</option>
+          </select>
+        </div>
+        <div class="form-field">
+          <label class="form-field__label" for="ext-key">${escapeHtml(t("set.token.ext.key"))}</label>
+          <input class="input" type="password" id="ext-key" name="key" autocomplete="off" spellcheck="false">
+        </div>
+      </div>
+      <p class="form-field__hint">${escapeHtml(t("set.token.ext.keyHint"))}</p>
+      <div style="display:flex; gap: var(--space-3); align-items:center; flex-wrap: wrap;">
+        <button type="submit" class="btn btn--primary btn--sm">${escapeHtml(t("set.token.ext.save"))}</button>
+        <span class="form-field__hint" data-ext-status>${escapeHtml(t("set.token.ext.status.empty"))}</span>
+      </div>
+    </form>
+  `;
+
+  const listHost = root.querySelector("[data-ext-list]");
+  const form = root.querySelector("[data-ext-form]");
+  const statusEl = root.querySelector("[data-ext-status]");
+
+  async function refresh() {
+    try {
+      const data = await api.extensionKeys.list();
+      renderExtensionKeysList(listHost, data, refresh);
+      // Reflect existing key in the status hint.
+      const sel = root.querySelector("#ext-provider").value;
+      const existing = data.find((k) => k.provider === sel);
+      statusEl.textContent = existing
+        ? t("set.token.ext.status.saved", { prefix: existing.key_prefix, updated: formatDateTime(existing.updated_at) })
+        : t("set.token.ext.status.empty");
+    } catch (e) {
+      listHost.innerHTML = `<p class="form-field__hint" style="color:var(--color-error)">${escapeHtml(e.message || "")}</p>`;
+    }
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const fd = new FormData(form);
+    const provider = String(fd.get("provider") || "").trim();
+    const key = String(fd.get("key") || "");
+    if (!provider || !key) {
+      toast(t("set.token.ext.required"), { tone: "error" });
+      return;
+    }
+    const submitBtn = form.querySelector("button[type=submit]");
+    submitBtn.disabled = true;
+    try {
+      const result = await api.extensionKeys.upsert(provider, key);
+      toast(t("set.token.ext.saved", { prefix: result.key_prefix }), { tone: "success" });
+      // Clear the input but keep the provider selection for next use.
+      form.querySelector("#ext-key").value = "";
+      await refresh();
+    } catch (e) {
+      toast(e?.message || "save failed", { tone: "error" });
+    } finally {
+      submitBtn.disabled = false;
+    }
+  });
+
+  // Provider switch → repaint status hint from the cached list.
+  root.querySelector("#ext-provider").addEventListener("change", () => refresh());
+
+  refresh();
+  return root;
+}
+
+function renderExtensionKeysList(host, items, refresh) {
+  if (!items || items.length === 0) {
+    host.innerHTML = `<p class="form-field__hint">${escapeHtml(t("set.token.ext.list.empty"))}</p>`;
+    return;
+  }
+  host.innerHTML = `
+    <div class="table-wrapper">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>${escapeHtml(t("set.token.ext.col.provider"))}</th>
+            <th>${escapeHtml(t("set.token.ext.col.prefix"))}</th>
+            <th>${escapeHtml(t("set.token.ext.col.updated"))}</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${items.map((k) => `
+            <tr>
+              <td><code>${escapeHtml(k.provider)}</code></td>
+              <td><code>${escapeHtml(k.key_prefix)}…</code></td>
+              <td>${escapeHtml(formatDateTime(k.updated_at))}</td>
+              <td><button type="button" class="btn btn--ghost btn--sm" data-ext-delete="${escapeHtml(k.provider)}">${escapeHtml(t("action.delete"))}</button></td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+  host.addEventListener("click", async (e) => {
+    const target = e.target.closest("[data-ext-delete]");
+    if (!target) return;
+    const provider = target.dataset.extDelete;
+    const ok = await confirmDialog({
+      title: t("set.token.ext.deleteConfirm.title"),
+      body: t("set.token.ext.deleteConfirm.body", { provider }),
+      confirmLabel: t("action.delete"),
+      confirmTone: "danger",
+    });
+    if (!ok) return;
+    try {
+      await api.extensionKeys.delete(provider);
+      toast(t("deleted"), { tone: "success" });
+      await refresh();
+    } catch (e) {
+      toast(e?.message || "delete failed", { tone: "error" });
+    }
+  }, { once: false });
+}

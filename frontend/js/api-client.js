@@ -25,6 +25,7 @@ import * as mockReports from "./mock/mock-reports.js";
 import * as mockSecurities from "./mock/mock-securities.js";
 import * as mockPrices from "./mock/mock-prices.js";
 import * as mockSkills from "./mock/mock-skills.js";
+import * as mockExtensionKeys from "./mock/mock-extension-keys.js";
 
 export class ApiError extends Error {
   constructor(code, message, detail, status = 0) {
@@ -104,6 +105,9 @@ const MOCK_TABLE = {
   "GET /reports/tax-estimate": mockReports.taxEstimate,
   "GET /prices/last-update": mockPrices.lastUpdate,
   "GET /skills":             mockSkills.listSkills,
+  "GET /extension-keys":              mockExtensionKeys.listExtensionKeys,
+  "POST /extension-keys/upsert":      mockExtensionKeys.upsertExtensionKey,
+  "POST /extension-keys/delete":      mockExtensionKeys.deleteExtensionKey,
   "GET /health":              async () => ({ service: "stock_hold", version: "mock" }),
   "GET /auth/recaptcha-config": async () => ({ enabled: false, site_key: "" }),
 };
@@ -349,6 +353,19 @@ export const apiTokens = {
   list:     () => request("GET", "/api-tokens/me").then(listItems),
   create:   (purpose) => request("POST", "/api-tokens/create", { purpose }),
   revoke:   (id) => request("POST", "/api-tokens/revoke", { id }),
+};
+
+/* Extension API Keys (Settings -> API Token -> External)
+ *
+ * Per-provider credentials used to CALL OUT to external services
+ * (e.g. Fubon Neo API for quote refresh). The plaintext is encrypted
+ * at rest on the backend; the API only ever returns the prefix for
+ * identification. Upsert replaces an existing key for the same provider.
+ */
+export const extensionKeys = {
+  list:   () => request("GET", "/extension-keys").then(listItems),
+  upsert: (provider, key) => request("POST", "/extension-keys/upsert", { provider, key }),
+  delete: (provider) => request("POST", "/extension-keys/delete", { provider }),
 };
 
 /* Schema introspection (Agent use) */

@@ -249,6 +249,149 @@ if ($method === 'POST' && $path === '/api-tokens/revoke') {
     envelope_ok(['id' => $tokenId, 'revoked' => true]);
 }
 
+/* ---------- Extension API Keys (external providers) ----------
+ *
+ * Per-user credentials stock_hold uses to CALL out — distinct from the
+ * api_tokens table above which holds stock_hold's own authentication
+ * tokens (hashed). Here we need the plaintext to send to the upstream,
+ * so we encrypt-at-rest with AES-256-CBC and never expose the plaintext
+ * through the API again after the initial write.
+ *
+ * Allowed provider values are the single source of truth for both the
+ * UI dropdown (the frontend should mirror this list for usability) and
+ * the upsert endpoint below. Adding a new provider is a two-step
+ * change: extend ALLOWED_EXTENSION_PROVIDERS + add the matching UI option.
+ */
+const ALLOWED_EXTENSION_PROVIDERS = ['fubon_api_key'];
+
+function extension_key_secret(): string
+{
+    // 1) Explicit override — recommended for production. 32 hex bytes.
+    $explicit = env_value('STOCK_HOLD_EXTENSION_KEY_SECRET');
+    if (is_string($explicit) && $explicit !== '' && !is_known_placeholder($explicit)) {
+        return hash('sha256', $explicit, true);
+    }
+    // 2) Fall back to deriving from STOCK_HOLD_INIT_TOKEN — already required
+    //    by the F-03 first-user bootstrap, so it should be a strong value.
+    $init = env_value('STOCK_HOLD_INIT_TOKEN');
+    if (is_string($init) && $init !== '' && !is_known_placeholder($init)) {
+        return hash('sha256', 'ext-fallback:' . $init, true);
+    }
+    // 3) Last resort: a fixed but clearly-labelled INSECURE default. This
+    //    keeps the system functional on minimal dev installs, but operators
+    //    MUST set STOCK_HOLD_EXTENSION_KEY_SECRET (or STOCK_HOLD_INIT_TOKEN)
+    //    before going to production. The key never leaves the server.
+    return hash('sha256', 'stock_hold-extension-key-INSECURE-DEFAULT', true);
+}
+
+function extension_key_encrypt(string $plaintext): array
+{
+    if (!function_exists('openssl_encrypt')) {
+        envelope_error('DEPENDENCY_MISSING', 'PHP OpenSSL extension is required to store extension keys.', 500);
+    }
+    $iv = random_bytes(16);
+    $ciphertext = openssl_encrypt($plaintext, 'aes-256-cbc', extension_key_secret(), OPENSSL_RAW_DATA, $iv);
+    if ($ciphertext === false) {
+        envelope_error('CRYPTO_ERROR', 'Failed to encrypt extension key.', 500);
+    }
+    return ['ciphertext' => bin2hex($ciphertext), 'iv' => bin2hex($iv)];
+}
+
+function extension_key_decrypt(string $ciphertextHex, string $ivHex): ?string
+{
+    if (!function_exists('openssl_decrypt')) {
+        return null;
+    }
+    $ciphertext = @hex2bin($ciphertextHex);
+    $iv = @hex2bin($ivHex);
+    if ($ciphertext === false || $iv === false || strlen($iv) !== 16) {
+        return null;
+    }
+    $plaintext = openssl_decrypt($ciphertext, 'aes-256-cbc', extension_key_secret(), OPENSSL_RAW_DATA, $iv);
+    return $plaintext === false ? null : $plaintext;
+}
+
+if ($method === 'GET' && $path === '/extension-keys') {
+    $currentUser = require_authenticated_user($pdo);
+    $stmt = $pdo->prepare('SELECT id, provider, key_prefix, created_at, updated_at FROM extension_api_keys WHERE user_id=? ORDER BY provider');
+    $stmt->execute([(int)$currentUser['id']]);
+    envelope_ok(list_data($stmt->fetchAll()));
+}
+
+if ($method === 'POST' && $path === '/extension-keys/upsert') {
+    $currentUser = require_write_access($pdo);
+    $input = body_json();
+    require_fields($input, ['provider', 'key']);
+    $provider = trim((string)$input['provider']);
+    if (!in_array($provider, ALLOWED_EXTENSION_PROVIDERS, true)) {
+        envelope_error(
+            'UNSUPPORTED_PROVIDER',
+            sprintf('不支援的 provider：%s。目前允許：%s', $provider, implode(', ', ALLOWED_EXTENSION_PROVIDERS)),
+            422,
+        );
+    }
+    $plain = trim((string)$input['key']);
+    if ($plain === '') {
+        envelope_error('VALIDATION_ERROR', 'Key cannot be empty.', 422);
+    }
+    if (strlen($plain) > 4096) {
+        envelope_error('VALIDATION_ERROR', 'Key is too long (max 4096 chars).', 422);
+    }
+    if (is_known_placeholder($plain)) {
+        envelope_error('VALIDATION_ERROR', 'Provided value looks like a placeholder; please enter the real one.', 422);
+    }
+
+    $enc = extension_key_encrypt($plain);
+    $prefix = substr($plain, 0, 8);
+    $now = now_sql();
+    $userId = (int)$currentUser['id'];
+
+    $pdo->beginTransaction();
+    try {
+        $existing = $pdo->prepare('SELECT id, created_at FROM extension_api_keys WHERE user_id=? AND provider=?');
+        $existing->execute([$userId, $provider]);
+        $row = $existing->fetch();
+        if ($row) {
+            $upd = $pdo->prepare('UPDATE extension_api_keys SET key_ciphertext=?, key_iv=?, key_prefix=?, updated_at=? WHERE user_id=? AND provider=?');
+            $upd->execute([$enc['ciphertext'], $enc['iv'], $prefix, $now, $userId, $provider]);
+            $id = (int)$row['id'];
+            $created = (string)$row['created_at'];
+        } else {
+            $ins = $pdo->prepare('INSERT INTO extension_api_keys (user_id, provider, key_ciphertext, key_iv, key_prefix, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)');
+            $ins->execute([$userId, $provider, $enc['ciphertext'], $enc['iv'], $prefix, $now, $now]);
+            $id = (int)$pdo->lastInsertId();
+            $created = $now;
+        }
+        $pdo->commit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        throw $e;
+    }
+    envelope_ok([
+        'id' => $id,
+        'provider' => $provider,
+        'key_prefix' => $prefix,
+        'created_at' => $created,
+        'updated_at' => $now,
+    ]);
+}
+
+if ($method === 'POST' && $path === '/extension-keys/delete') {
+    $currentUser = require_write_access($pdo);
+    $input = body_json();
+    require_fields($input, ['provider']);
+    $provider = trim((string)$input['provider']);
+    if (!in_array($provider, ALLOWED_EXTENSION_PROVIDERS, true)) {
+        envelope_error('UNSUPPORTED_PROVIDER', sprintf('不支援的 provider：%s', $provider), 422);
+    }
+    $stmt = $pdo->prepare('DELETE FROM extension_api_keys WHERE user_id=? AND provider=?');
+    $stmt->execute([(int)$currentUser['id'], $provider]);
+    if ($stmt->rowCount() === 0) {
+        envelope_error('NOT_FOUND', 'No extension key found for this provider.', 404);
+    }
+    envelope_ok(['provider' => $provider, 'deleted' => true]);
+}
+
 if ($method !== 'GET') {
     $currentUser = require_write_access($pdo);
 } else {
