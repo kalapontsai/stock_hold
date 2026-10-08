@@ -259,6 +259,7 @@ const STRINGS = {
     "set.quotes.fubon.noKey.body":    "切換為 Fubon Neo API 撥價前，需要先在「④ API Token → 外部 API 金鑰」填入 fubon_api_key。\n\n金鑰以 AES-256-CBC 加密儲存在伺服器、取出後只要重灌一次即可取代。\n\n請問現在前往填入嗎？",
     "set.quotes.fubon.noKey.goToken": "前往填入",
     "set.quotes.fubon.noKey.later":   "稍後再說",
+    "set.quotes.yahoo.providerHint":  "不需要 API key；台股自動套用 .TW / .TWO 後綴（交易所 = 預設/TW 加 .TW；= OTC/TPEx 加 .TWO），其餘市場（美/港/日/中）請直接輸入 Yahoo 格式 ticker（AAPL、0700.HK、7203.T 等）。",
     "set.appearance.theme":       "主題",
     "set.appearance.light":       "淺色",
     "set.appearance.dark":        "深色",

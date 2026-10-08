@@ -232,6 +232,7 @@ export async function mountSettings(root) {
       <label class="form-field__label" for="quote-provider">報價來源</label>
       <select class="select" id="quote-provider">
         <option value="twse_mis">台灣證交所 MIS（免 API key）</option>
+        <option value="yahoo">Yahoo Finance（免 API key，支援美股/台股/全球）</option>
         <option value="fubon">Fubon Neo API（需 fubon_api_key）</option>
         <option value="manual">手動匯入</option>
       </select>
@@ -253,7 +254,13 @@ export async function mountSettings(root) {
   // 501 on first refresh attempt.
   const providerHint = quoteSection.querySelector("[data-quote-provider-hint]");
   function paintProviderHint(provider) {
-    providerHint.textContent = provider === "fubon" ? t("set.quotes.fubon.providerHint") : "";
+    if (provider === "fubon") {
+      providerHint.textContent = t("set.quotes.fubon.providerHint");
+    } else if (provider === "yahoo") {
+      providerHint.textContent = t("set.quotes.yahoo.providerHint");
+    } else {
+      providerHint.textContent = "";
+    }
   }
   paintProviderHint(quoteSettings.provider);
 

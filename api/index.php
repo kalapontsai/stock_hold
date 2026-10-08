@@ -666,6 +666,171 @@ function fetch_twse_mis_quotes(PDO $pdo, array $securities): array
     return array_merge($result, ['failed' => $failed]);
 }
 
+// Yahoo Finance v8 chart API fetcher.
+//
+// Public, free-of-charge endpoint (no API key needed). Used as the
+// default overseas / catch-all provider — covers US, HK, JP, CN tickers
+// in addition to TWSE/TPEx, while TWSE MIS still wins for
+// intra-day-accurate TW trades.
+//
+// Symbol mapping (mirrors the TWSE fetcher's exchange logic):
+//   - exchange = 'OTC' | 'TPEx' → {symbol}.TWO  (TPEx / 櫃球寶)
+//   - exchange = 'TW'           → {symbol}.TW   (TWSE)
+//   - anything else             → {symbol}      (US/HK/JP/CN:
+//                                               caller is responsible
+//                                               for using the right
+//                                               Yahoo ticker format,
+//                                               e.g. AAPL, 0700.HK,
+//                                               7203.T, 600519.SS)
+//
+// Yahoo started rejecting requests with generic User-Agents circa 2017
+// (returns HTTP 429 or empty body). Send a real-looking browser UA; the
+// endpoint is read-only public data, so no auth is required.
+function fetch_yahoo_quotes(PDO $pdo, array $securities): array
+{
+    if (!function_exists('curl_init')) {
+        envelope_error('DEPENDENCY_MISSING', 'PHP cURL extension is required for quote updates.', 500);
+    }
+    if (!$securities) return ['updated' => 0, 'failed' => []];
+
+    $baseUrl = 'https://query1.finance.yahoo.com/v8/finance/chart/';
+    $ua = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+    // Build a Yahoo-symbol → security map. Yahoo's chart endpoint
+    // accepts one symbol per request (no batch), so we iterate.
+    $byYahooSymbol = [];
+    foreach ($securities as $security) {
+        $exchange = strtoupper((string)($security['exchange'] ?? ''));
+        $symbol = (string)($security['symbol'] ?? '');
+        if ($symbol === '') continue;
+        if ($exchange === 'OTC' || $exchange === 'TPEX') {
+            $yahooSymbol = $symbol . '.TWO';
+        } elseif ($exchange === 'TW') {
+            $yahooSymbol = $symbol . '.TW';
+        } else {
+            // US/HK/JP/CN or any non-TW market: pass through. Caller
+            // must use a Yahoo-recognised ticker (AAPL, 0700.HK, …).
+            $yahooSymbol = $symbol;
+        }
+        $byYahooSymbol[$yahooSymbol] = $security;
+    }
+
+    $items = [];
+    $failed = [];
+    $today = gmdate('Ymd');
+    $yesterday = gmdate('Ymd', time() - 86400);
+
+    foreach ($byYahooSymbol as $yahooSymbol => $security) {
+        $url = $baseUrl . rawurlencode($yahooSymbol) . '?interval=1d&range=5d&includePrePost=false';
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            // F-08 fix (mirror of fetch_twse_mis_quotes): no FOLLOWLOCATION
+            // to keep SSRF surface tight. Yahoo has never redirected us;
+            // if it ever does, switch to an explicit allow-list.
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_TIMEOUT => 15,
+            CURLOPT_HTTPHEADER => ['Accept: application/json', 'User-Agent: ' . $ua],
+        ]);
+        $raw = curl_exec($ch);
+        $status = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlErr = curl_error($ch);
+        curl_close($ch);
+
+        if ($raw === false || $status < 200 || $status >= 300) {
+            $failed[] = ['symbol' => (string)$security['symbol'], 'reason' => 'Yahoo HTTP ' . ($status ?: '0') . ($curlErr ? ' (' . $curlErr . ')' : '')];
+            continue;
+        }
+
+        $payload = json_decode($raw, true);
+        if (!is_array($payload)) {
+            $failed[] = ['symbol' => (string)$security['symbol'], 'reason' => 'Yahoo JSON parse failed'];
+            continue;
+        }
+        $chart = $payload['chart'] ?? null;
+        if (!is_array($chart) || !empty($chart['error'])) {
+            $errMsg = is_array($chart['error'] ?? null)
+                ? (string)($chart['error']['description'] ?? ($chart['error']['code'] ?? 'unknown'))
+                : 'unknown';
+            $failed[] = ['symbol' => (string)$security['symbol'], 'reason' => 'Yahoo error: ' . $errMsg];
+            continue;
+        }
+        $result = $chart['result'][0] ?? null;
+        if (!is_array($result)) {
+            $failed[] = ['symbol' => (string)$security['symbol'], 'reason' => 'Yahoo empty result'];
+            continue;
+        }
+
+        $meta = $result['meta'] ?? [];
+        $indicators = $result['indicators']['quote'][0] ?? [];
+        $close = $meta['regularMarketPrice'] ?? null;
+        $previousClose = $meta['chartPreviousClose'] ?? $meta['previousClose'] ?? null;
+        if (!is_numeric($close) || (float)$close <= 0) {
+            $failed[] = ['symbol' => (string)$security['symbol'], 'reason' => 'No valid Yahoo latest price'];
+            continue;
+        }
+
+        // Yahoo returns a trailing-aligned series; take the latest bar.
+        $open   = is_numeric(end($indicators['open']   ?? [null]) ?? null) ? end($indicators['open']   ?? [null]) : $close;
+        $high   = is_numeric(end($indicators['high']   ?? [null]) ?? null) ? end($indicators['high']   ?? [null]) : $close;
+        $low    = is_numeric(end($indicators['low']    ?? [null]) ?? null) ? end($indicators['low']    ?? [null]) : $close;
+        $volume = end($indicators['volume'] ?? [null]);
+        if (!is_numeric($volume)) $volume = '0';
+
+        $currency = strtoupper((string)($meta['currency'] ?? $security['currency'] ?? 'USD'));
+
+        $items[] = [
+            'security_id' => (string)$security['id'],
+            'date' => $today,
+            'open' => (string)$open,
+            'high' => (string)$high,
+            'low'  => (string)$low,
+            'close' => (string)$close,
+            'volume' => (string)$volume,
+            'currency' => $currency,
+            'user_id' => (int)$security['user_id'],
+        ];
+
+        if (is_numeric($previousClose) && (float)$previousClose > 0) {
+            $items[] = [
+                'security_id' => (string)$security['id'],
+                'date' => $yesterday,
+                'open' => (string)$previousClose,
+                'high' => (string)$previousClose,
+                'low'  => (string)$previousClose,
+                'close' => (string)$previousClose,
+                'volume' => '0',
+                'currency' => $currency,
+                'user_id' => (int)$security['user_id'],
+            ];
+        } else {
+            $failed[] = ['symbol' => (string)$security['symbol'], 'reason' => 'No valid Yahoo previous close'];
+        }
+    }
+
+    $result = persist_prices($pdo, $items);
+
+    // Mirror TWSE: prune stale prices per security so the dashboard /
+    // holdings always see only the freshest snapshot. Without this the
+    // `prices` table accumulates rows from past refresh attempts and
+    // any chart that joins on `MAX(date)` keeps jumping back in time
+    // when a single fetch misses.
+    $keepDatesBySecurity = [];
+    foreach ($items as $item) {
+        $key = (string)$item['user_id'] . "\0" . (string)$item['security_id'];
+        $keepDatesBySecurity[$key][] = (string)$item['date'];
+    }
+    foreach ($keepDatesBySecurity as $key => $dates) {
+        [$itemUserId, $securityId] = explode("\0", $key, 2);
+        $keepDates = array_values(array_unique($dates));
+        $datePlaceholders = implode(',', array_fill(0, count($keepDates), '?'));
+        $delete = $pdo->prepare("DELETE FROM prices WHERE user_id=? AND security_id=? AND date NOT IN ({$datePlaceholders})");
+        $delete->execute(array_merge([(int)$itemUserId, $securityId], $keepDates));
+    }
+
+    return array_merge($result, ['failed' => $failed]);
+}
+
 if ($method === 'GET' && $path === '/accounts') {
     $stmt = $pdo->prepare('SELECT id,type,name,currency,broker,account_no,status,created_at,updated_at FROM accounts WHERE user_id=? ORDER BY type,name');
     $stmt->execute([$userId]);
@@ -1234,7 +1399,7 @@ if ($method === 'GET' && $path === '/settings/quotes') {
 }
 if ($method === 'POST' && $path === '/settings/quotes') {
     $provider = (string)($input['provider'] ?? 'twse_mis');
-    if (!in_array($provider, ['twse_mis', 'manual', 'fubon'], true)) envelope_error('VALIDATION_ERROR', 'Unsupported quote provider.', 422);
+    if (!in_array($provider, ['twse_mis', 'manual', 'fubon', 'yahoo'], true)) envelope_error('VALIDATION_ERROR', 'Unsupported quote provider.', 422);
     $interval = (int)($input['interval_minutes'] ?? app_setting($pdo, 'quotes.interval_minutes', '15'));
     if ($interval < 1 || $interval > 1440) envelope_error('VALIDATION_ERROR', 'Interval must be between 1 and 1440 minutes.', 422);
     $enabled = array_key_exists('enabled', $input)
@@ -1275,6 +1440,8 @@ if ($method === 'POST' && $path === '/prices/batch-update') {
         $securities = $stmt->fetchAll();
         if ($provider === 'fubon') {
             envelope_ok(fetch_fubon_quotes($pdo, $userId, $securities));
+        } elseif ($provider === 'yahoo') {
+            envelope_ok(fetch_yahoo_quotes($pdo, $securities));
         } else {
             envelope_ok(fetch_twse_mis_quotes($pdo, $securities));
         }
