@@ -10,11 +10,7 @@ set_exception_handler(static function (Throwable $e): never {
     // bound SQL parameters and table names → schema/values leak. Log only
     // the exception class + a correlation token (request_id) so operators
     // can grep for a specific incident without exposing internals.
-    error_log(json_encode([
-        'event' => 'stock_hold_api_error',
-        'type' => get_class($e),
-        'request_id' => request_id(),
-    ]));
+    sh_log('error', 'api_error', ['type' => get_class($e)]);
     envelope_error('INTERNAL_ERROR', 'Internal server error.', 500);
 });
 
@@ -545,6 +541,7 @@ function persist_prices(PDO $pdo, array $items): array
 function fetch_fubon_quotes(PDO $pdo, int $userId, array $securities): array
 {
     if ($userId <= 0) {
+        sh_log('error', 'quote_refresh.fetch_error', ['provider' => 'fubon', 'code' => 'INVALID_REQUEST']);
         envelope_error('INVALID_REQUEST', 'Cannot determine user for Fubon quote fetch.', 422);
     }
 
@@ -552,6 +549,7 @@ function fetch_fubon_quotes(PDO $pdo, int $userId, array $securities): array
     $stmt->execute([$userId, 'fubon_api_key']);
     $row = $stmt->fetch();
     if (!$row) {
+        sh_log('error', 'quote_refresh.fetch_error', ['provider' => 'fubon', 'code' => 'FUBON_API_KEY_MISSING']);
         envelope_error(
             'FUBON_API_KEY_MISSING',
             '尚未設定 fubon_api_key。請至「設定 → ④ API Token → 外部 API 金鑰」填入 fubon_api_key 後重試。',
@@ -562,6 +560,7 @@ function fetch_fubon_quotes(PDO $pdo, int $userId, array $securities): array
 
     $apiKey = extension_key_decrypt((string)$row['key_ciphertext'], (string)$row['key_iv']);
     if ($apiKey === null || $apiKey === '') {
+        sh_log('error', 'quote_refresh.fetch_error', ['provider' => 'fubon', 'code' => 'FUBON_API_KEY_DECRYPT_FAILED']);
         envelope_error(
             'FUBON_API_KEY_DECRYPT_FAILED',
             '無法解密 fubon_api_key；加密金鑰可能已被輪換，請重新填入。',
@@ -573,6 +572,11 @@ function fetch_fubon_quotes(PDO $pdo, int $userId, array $securities): array
     // See header docblock for the why. Surfaced as a hard 501 so the UI
     // can show a clear "not yet implemented" message rather than a
     // half-working provider that silently skips symbols.
+    sh_log('error', 'quote_refresh.fetch_error', [
+        'provider' => 'fubon',
+        'code' => 'FUBON_PROVIDER_NOT_IMPLEMENTED',
+        'securities_count' => count($securities),
+    ]);
     envelope_error(
         'FUBON_PROVIDER_NOT_IMPLEMENTED',
         'Fubon Neo API 整合需要 Python service（binary SDK 限制，詳見 D:\\Python\\venv\\fubon_api\\SKILL.md）。' .
@@ -585,6 +589,7 @@ function fetch_fubon_quotes(PDO $pdo, int $userId, array $securities): array
 function fetch_twse_mis_quotes(PDO $pdo, array $securities): array
 {
     if (!function_exists('curl_init')) {
+        sh_log('error', 'quote_refresh.fetch_error', ['provider' => 'twse_mis', 'code' => 'DEPENDENCY_MISSING']);
         envelope_error('DEPENDENCY_MISSING', 'PHP cURL extension is required for quote updates.', 500);
     }
     $parts = [];
@@ -609,10 +614,17 @@ function fetch_twse_mis_quotes(PDO $pdo, array $securities): array
     $error = curl_error($ch);
     curl_close($ch);
     if ($raw === false || $status < 200 || $status >= 300) {
+        sh_log('error', 'quote_refresh.fetch_error', [
+            'provider' => 'twse_mis',
+            'code' => 'QUOTE_SOURCE_ERROR',
+            'http_status' => $status,
+            'curl_error' => $error,
+        ]);
         envelope_error('QUOTE_SOURCE_ERROR', 'Unable to fetch TWSE MIS quotes.', 502, $error ?: ('HTTP ' . $status));
     }
     $payload = json_decode($raw, true);
     if (!is_array($payload) || !is_array($payload['msgArray'] ?? null)) {
+        sh_log('error', 'quote_refresh.fetch_error', ['provider' => 'twse_mis', 'code' => 'QUOTE_SOURCE_INVALID_RESPONSE']);
         envelope_error('QUOTE_SOURCE_ERROR', 'TWSE MIS returned an invalid response.', 502);
     }
     $bySymbol = [];
@@ -689,6 +701,7 @@ function fetch_twse_mis_quotes(PDO $pdo, array $securities): array
 function fetch_yahoo_quotes(PDO $pdo, array $securities): array
 {
     if (!function_exists('curl_init')) {
+        sh_log('error', 'quote_refresh.fetch_error', ['provider' => 'yahoo', 'code' => 'DEPENDENCY_MISSING']);
         envelope_error('DEPENDENCY_MISSING', 'PHP cURL extension is required for quote updates.', 500);
     }
     if (!$securities) return ['updated' => 0, 'failed' => []];
@@ -1427,7 +1440,10 @@ if ($method === 'POST' && $path === '/prices/batch-update') {
     if ($hasManualItems && !is_array($items)) envelope_error('VALIDATION_ERROR', 'prices must be an array.', 422);
     if (!$hasManualItems || count($items) === 0) {
         $provider = app_setting($pdo, 'quotes.provider', 'twse_mis');
-        if ($provider === 'manual') envelope_error('QUOTE_PROVIDER_MANUAL', 'Quote provider is set to manual.', 422);
+        if ($provider === 'manual') {
+            sh_log('info', 'quote_refresh.manual_rejected', ['user_id' => $userId]);
+            envelope_error('QUOTE_PROVIDER_MANUAL', 'Quote provider is set to manual.', 422);
+        }
         $symbols = $input['symbols'] ?? [];
         $sql = 'SELECT id,symbol,exchange,currency,user_id FROM securities WHERE is_active=1 AND user_id=?';
         $params = [$userId];
@@ -1438,12 +1454,26 @@ if ($method === 'POST' && $path === '/prices/batch-update') {
         }
         $stmt = $pdo->prepare($sql); $stmt->execute($params);
         $securities = $stmt->fetchAll();
+        sh_log('info', 'quote_refresh.start', [
+            'provider' => $provider,
+            'securities_count' => count($securities),
+            'symbols_filter' => is_array($symbols) ? count($symbols) : 0,
+        ]);
+        // Capture each fetcher's return so we can record the outcome
+        // before envelope_ok() exits the script. fubon never returns
+        // (its fetch_*_quotes() always envelope_error()s on the SDK
+        // gap or missing key), so its fetch_error line lives inside
+        // fetch_fubon_quotes() itself.
         if ($provider === 'fubon') {
             envelope_ok(fetch_fubon_quotes($pdo, $userId, $securities));
         } elseif ($provider === 'yahoo') {
-            envelope_ok(fetch_yahoo_quotes($pdo, $securities));
+            $result = fetch_yahoo_quotes($pdo, $securities);
+            sh_log_quote_done($provider, $result);
+            envelope_ok($result);
         } else {
-            envelope_ok(fetch_twse_mis_quotes($pdo, $securities));
+            $result = fetch_twse_mis_quotes($pdo, $securities);
+            sh_log_quote_done($provider, $result);
+            envelope_ok($result);
         }
     }
     foreach ($items as $item) {

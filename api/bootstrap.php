@@ -165,7 +165,14 @@ function security_headers(): void
 
 function request_id(): string
 {
-    return bin2hex(random_bytes(16));
+    // Memoize per-request: every sh_log() entry and the envelope meta
+    // should share the same request_id so an operator can correlate
+    // a single click with all server-side decisions that followed.
+    static $id = null;
+    if ($id === null) {
+        $id = bin2hex(random_bytes(16));
+    }
+    return $id;
 }
 
 function envelope_ok(mixed $data, int $status = 200): never
@@ -429,12 +436,12 @@ function recaptcha_assess_login(string $token): ?bool
 
     $thresholdValue = env_value('STOCK_HOLD_RECAPTCHA_MIN_SCORE', '0.5');
     if (!is_numeric($thresholdValue) || (float)$thresholdValue < 0 || (float)$thresholdValue > 1) {
-        error_log(json_encode(['event' => 'stock_hold_recaptcha_unavailable', 'reason' => 'invalid_threshold']));
+        sh_log('warn', 'recaptcha_unavailable', ['reason' => 'invalid_threshold']);
         return null;
     }
 
     if (!function_exists('curl_init')) {
-        error_log(json_encode(['event' => 'stock_hold_recaptcha_unavailable', 'reason' => 'curl_unavailable']));
+        sh_log('warn', 'recaptcha_unavailable', ['reason' => 'curl_unavailable']);
         return null;
     }
 
@@ -447,7 +454,7 @@ function recaptcha_assess_login(string $token): ?bool
         ],
     ], JSON_UNESCAPED_SLASHES);
     if ($payload === false) {
-        error_log(json_encode(['event' => 'stock_hold_recaptcha_unavailable', 'reason' => 'request_encoding_failed']));
+        sh_log('warn', 'recaptcha_unavailable', ['reason' => 'request_encoding_failed']);
         return null;
     }
 
@@ -455,7 +462,7 @@ function recaptcha_assess_login(string $token): ?bool
         . rawurlencode($config['project_id']) . '/assessments';
     $curl = curl_init($url);
     if ($curl === false) {
-        error_log(json_encode(['event' => 'stock_hold_recaptcha_unavailable', 'reason' => 'curl_init_failed']));
+        sh_log('warn', 'recaptcha_unavailable', ['reason' => 'curl_init_failed']);
         return null;
     }
     curl_setopt_array($curl, [
@@ -478,49 +485,45 @@ function recaptcha_assess_login(string $token): ?bool
     curl_close($curl);
 
     if ($curlFailed || $status < 200 || $status >= 300) {
-        error_log(json_encode([
-            'event' => 'stock_hold_recaptcha_unavailable',
+        sh_log('warn', 'recaptcha_unavailable', [
             'reason' => $curlFailed ? 'request_failed' : ($status === 400 ? 'invalid_assessment_request' : 'http_error'),
             'http_status' => $status,
-        ]));
+        ]);
         return null;
     }
 
     $assessment = json_decode((string)$response, true);
     $tokenProperties = is_array($assessment) ? ($assessment['tokenProperties'] ?? null) : null;
     if (!is_array($tokenProperties) || ($tokenProperties['valid'] ?? false) !== true) {
-        error_log(json_encode([
-            'event' => 'stock_hold_recaptcha_rejected',
+        sh_log('warn', 'recaptcha_rejected', [
             'reason' => 'invalid_token',
             'invalid_reason' => is_array($tokenProperties)
                 ? (string)($tokenProperties['invalidReason'] ?? 'unspecified')
                 : 'missing_token_properties',
-        ]));
+        ]);
         return false;
     }
     $action = (string)($tokenProperties['action'] ?? '');
     if (strcasecmp($action, 'login') !== 0) {
-        error_log(json_encode([
-            'event' => 'stock_hold_recaptcha_rejected',
+        sh_log('warn', 'recaptcha_rejected', [
             'reason' => 'action_mismatch',
             'action' => $action !== '' ? $action : 'missing',
-        ]));
+        ]);
         return false;
     }
 
     $score = $assessment['riskAnalysis']['score'] ?? null;
     if (!is_numeric($score) || (float)$score < 0 || (float)$score > 1) {
-        error_log(json_encode(['event' => 'stock_hold_recaptcha_unavailable', 'reason' => 'invalid_assessment']));
+        sh_log('warn', 'recaptcha_unavailable', ['reason' => 'invalid_assessment']);
         return null;
     }
     $allowed = (float)$score >= (float)$thresholdValue;
     if (!$allowed) {
-        error_log(json_encode([
-            'event' => 'stock_hold_recaptcha_rejected',
+        sh_log('warn', 'recaptcha_rejected', [
             'reason' => 'low_score',
             'score' => (float)$score,
             'threshold' => (float)$thresholdValue,
-        ]));
+        ]);
     }
     return $allowed;
 }
@@ -655,8 +658,85 @@ function audit_log_write(PDO $pdo, int $userId, string $action, ?string $ip = nu
     } catch (Throwable $e) {
         // F-11 fix: class only, no message (PDOException message can leak
         // bound values and table structure into the error log).
-        error_log('audit_log_write failed: ' . get_class($e));
+        sh_log('error', 'audit_log_write_failed', ['exception_class' => get_class($e)]);
     }
+}
+
+// Structured application log written to runtime/log/stock_hold.YYYY-MM-DD.log
+// (NDJSON, one event per line). Bypasses PHP's default error_log destination
+// so operators have a single place to look for stock_hold's own events
+// without sifting through Apache error.log.
+//
+// Env knobs:
+//   STOCK_HOLD_LOG=0                  — disable (default: enabled)
+//   STOCK_HOLD_LOG_RETENTION_DAYS=N   — keep last N days (default 30)
+//
+// Retention runs probabilistically (1/100 per call) so disk usage stays
+// bounded without needing a cron entry. For explicit cleanup, run
+// `php cli/log-cleanup.php`.
+//
+// Logging must NEVER break the request — failures fall back to PHP's
+// default error_log so the operator at least has a breadcrumb in
+// Apache error.log.
+function sh_log(string $level, string $event, array $context = []): void
+{
+    if (env_value('STOCK_HOLD_LOG') === '0') return;
+    try {
+        $dir = runtime_dir() . DIRECTORY_SEPARATOR . 'log';
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0770, true);
+        }
+        $ts = gmdate('Y-m-d\TH:i:s')
+            . sprintf('.%03d', (int)((microtime(true) - floor(microtime(true))) * 1000))
+            . 'Z';
+        $entry = [
+            'ts' => $ts,
+            'level' => $level,
+            'event' => $event,
+            'request_id' => request_id(),
+            'user_id' => isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : null,
+            'context' => $context,
+        ];
+        $line = json_encode($entry, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n";
+        $file = $dir . DIRECTORY_SEPARATOR . 'stock_hold.' . gmdate('Y-m-d') . '.log';
+        @file_put_contents($file, $line, FILE_APPEND | LOCK_EX);
+
+        // Probabilistic retention sweep (1/100 per call). Cheap, doesn't
+        // need a cron, and the math: ~5 calls/min × 100 = cleanup every
+        // ~20 min on average. Old files are unlinked; if a writer is
+        // mid-flush the OS will keep the inode alive via the open fd.
+        if (mt_rand(1, 100) === 1) {
+            $retention = max(1, (int)(env_value('STOCK_HOLD_LOG_RETENTION_DAYS') ?: '30'));
+            $cutoff = gmdate('Y-m-d', time() - $retention * 86400);
+            foreach (glob($dir . DIRECTORY_SEPARATOR . 'stock_hold.*.log') ?: [] as $old) {
+                if (preg_match('/stock_hold\.(\d{4}-\d{2}-\d{2})\.log$/', basename($old), $m)) {
+                    if ($m[1] < $cutoff) @unlink($old);
+                }
+            }
+        }
+    } catch (Throwable $e) {
+        @error_log('[sh_log fallback] ' . get_class($e) . ': ' . $e->getMessage());
+    }
+}
+
+// Quote-refresh outcome summarizer. Called from the /prices/batch-update
+// dispatch right after a fetcher returns, so operators can grep one
+// line per refresh attempt instead of sifting through per-symbol failures.
+// Per-symbol failures stay in the API response (the `failed` array) for
+// the UI; here we just bucket by reason for at-a-glance triage.
+function sh_log_quote_done(string $provider, array $result): void
+{
+    $failedByReason = [];
+    foreach ($result['failed'] ?? [] as $f) {
+        $r = (string)($f['reason'] ?? 'unknown');
+        $failedByReason[$r] = ($failedByReason[$r] ?? 0) + 1;
+    }
+    sh_log('info', 'quote_refresh.fetch_done', [
+        'provider' => $provider,
+        'updated' => (int)($result['updated'] ?? 0),
+        'failed_count' => count($result['failed'] ?? []),
+        'failed_by_reason' => $failedByReason,
+    ]);
 }
 
 function now_sql(): string
