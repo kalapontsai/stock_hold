@@ -862,7 +862,10 @@ function computeAmount(row) {
   };
   if (row.type === "DEPOSIT" || row.type === "TRANSFER_IN") return signed(row.amount, true);
   if (row.type === "WITHDRAW" || row.type === "TRANSFER_OUT") return signed(row.amount, false);
-  if (row.type === "DIVIDEND") return signed(Number(row.qty || 0) * Number(row.price || 0), true);
+  // DIVIDEND 也走 row.amount：bank 類別的表單只讓使用者填金額（qty/price 在
+  // 銀行類別是隱藏的），原本走 qty*price 會得到 0，造成「金額沒存到」的錯覺。
+  // cash-flow 類型一律以 row.amount 為準，stock-flow 類型才走 qty*price。
+  if (row.type === "DIVIDEND") return signed(row.amount, true);
   if (row.type === "BUY" || row.type === "RIGHTS") return signed(Number(row.qty || 0) * Number(row.price || 0), false);
   if (row.type === "SELL") return signed(Number(row.qty || 0) * Number(row.price || 0), true);
   return "—";

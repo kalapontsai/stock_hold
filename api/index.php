@@ -984,7 +984,9 @@ if ($method === 'GET' && $path === '/dashboard/summary') {
             $todayPnl += $qty * ($latest - $prev);
         }
     }
-    $stmt = $pdo->prepare('SELECT COALESCE(SUM(amount),0) FROM transactions WHERE security_id IS NULL AND user_id=?');
+    // cash 用類型過濾而非 security_id IS NULL：DIVIDEND 即使帶了標的（記錄是哪支股票
+    // 配的息）也是現金流入，必須計入；BUY/SELL/SPLIT/MERGER/RIGHTS 是持倉變動，不算現金流。
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(amount),0) FROM transactions WHERE type IN ('DEPOSIT','WITHDRAW','TRANSFER_IN','TRANSFER_OUT','DIVIDEND') AND user_id=?");
     $stmt->execute([$userId]);
     $cash = (float)$stmt->fetchColumn();
     $holdings = $count($pdo, 'SELECT COUNT(*) FROM positions WHERE qty > 0 AND user_id=?', $userId);
@@ -1013,7 +1015,8 @@ if ($method === 'GET' && $path === '/dashboard/summary') {
 }
 if ($method === 'GET' && $path === '/dashboard/allocation') {
     $stmt = $pdo->prepare('SELECT s.exchange AS label, SUM(p.qty * COALESCE((SELECT close FROM prices pr WHERE pr.security_id=p.security_id AND pr.user_id=p.user_id ORDER BY pr.date DESC LIMIT 1),0)) AS value FROM positions p JOIN securities s ON s.id=p.security_id AND s.user_id=p.user_id WHERE p.qty > 0 AND p.user_id=? GROUP BY s.exchange ORDER BY value DESC'); $stmt->execute([$userId]); $rows = $stmt->fetchAll();
-    $stmt = $pdo->prepare('SELECT COALESCE(SUM(amount),0) FROM transactions WHERE security_id IS NULL AND user_id=?'); $stmt->execute([$userId]); $cash = (float)$stmt->fetchColumn();
+    // cash-flow 類型白名單：同 /dashboard/summary，允許 DIVIDEND 帶標的時仍計入現金
+    $stmt = $pdo->prepare("SELECT COALESCE(SUM(amount),0) FROM transactions WHERE type IN ('DEPOSIT','WITHDRAW','TRANSFER_IN','TRANSFER_OUT','DIVIDEND') AND user_id=?"); $stmt->execute([$userId]); $cash = (float)$stmt->fetchColumn();
     $allocation = array_map(static fn(array $row): array => ['label' => $row['label'], 'value' => (float)$row['value'], 'color' => null], $rows);
     if ($cash > 0) $allocation[] = ['label' => '現金', 'value' => $cash, 'color' => null];
     envelope_ok($allocation);
