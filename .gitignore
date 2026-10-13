@@ -31,3 +31,7 @@ node_modules/
 Thumbs.db
 .idea/
 .vscode/
+
+# Local daily memory and dated server logs (not for public repo)
+/memory/
+/log/*.log.*

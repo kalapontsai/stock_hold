@@ -2,6 +2,124 @@
 
 本檔記錄 stock_hold 的所有重要變更。格式參考 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/),版本遵循 [Semantic Versioning](https://semver.org/lang/zh-TW/)。
 
+## [2.4.0] - 2026-10-12
+
+### Added
+- **FinMind v4 報價來源**（`api/index.php` + `api/_pnl_history.php` + 前端）
+  - 新 provider `finmind`:台股完整歷史 (2010+),免費 token 即可使用 TaiwanStockPrice dataset。
+  - Token 儲存沿用既有 `extension_api_keys` (AES-256-CBC),`ALLOWED_EXTENSION_PROVIDERS` 加 `finmind_token`。
+  - 即時報價: `fetch_finmind_quotes(PDO, userId, securities)` — 1 個 symbol 1 個 HTTP call,跟 yahoo / twse_mis 同樣的 keep_dates 清理邏輯。
+  - 歷史補入: `pnl_backfill_finmind(PDO, userId, securities, fromIso, toIso)` — 1 個 symbol 1 個 range call,200ms polite sleep。Free tier 600 req/hr,我們 8 個 symbol × 365 天 = 8 reqs 遠在內。
+  - 與 `pnl.historical.max_lookback_days` 走同樣設定;只補「今天以前」(嚴格 `< todayIso`)。
+  - 自動加進 `pnl_backfill_history` dispatch,順 `quotes.provider` 自動生效。
+  - TW-only 覆蓋:FinMind 免費 tier 不支援美股 / 港股 / 日股。非 TW symbol 會被記為 `failed: finmind_tw_only` 而不跳出錯誤。
+  - **SSRF 防護**:硬編 host `https://api.finmindtrade.com`,無 `CURLOPT_FOLLOWLOCATION`,只有 query 參數 + token (使用者輸入的 token,不是 user-controlled host)。
+
+- **i18n 新增**: `set.token.ext.provider.finmind_token` / `set.token.ext.hint.finmind` / `set.quotes.finmind.providerHint` / `set.quotes.finmind.noKey.{title,body,goToken,later}` / `set.quotes.finmind.label`。
+
+- **Settings UI 報價 dropdown 加 `finmind`**（`frontend/js/pages/settings.js`）
+  - 跟 fubon 同一條跳轉邏輯:切到 finmind 會檢查 `extension_api_keys` 是否有 `finmind_token`,沒有就彈對話框問要不要跳到「外部 API 金鑰」填入。
+  - Token provider 下拉選單加 `finmind_token` 選項,使用者可以直接在「外部 API 金鑰」小節填入。
+
+- **Bump `STOCK_HOLD_VERSION` → 2.4.0**（`api/bootstrap.php`）
+  - 經 2.3.1 部署驗證發現:每次升級必須 bump version 常數並以 `/health.version` 為部署 anchor (詳見 `memory/2026-10-12.md` §「本地 Apache 部署」)。
+
+### Changed
+- **損益歷史 UI**（`frontend/js/pages/reports.js`）：第一張圖改為總資產／市值／現金三條折線，新增第二張每日未實現損益正負長條圖；兩圖共用同步時間軸，正收益綠色、負收益紅色。
+- **損益歷史 source 標記**（`api/_pnl.php`）：以各 snapshot 自身日期判定 live / historical_import，避免整個查詢期間誤用起始日期。
+- `ALLOWED_EXTENSION_PROVIDERS` 從 `['fubon_api_key']` 擴為 `['fubon_api_key', 'finmind_token']`。
+- `POST /settings/quotes` 的 provider whitelist 加 `finmind`。
+
+### Notes
+- 預期 push 範圍:2 個 commit(2.3.1 P&L 補入 / 2.4.0 FinMind 報價 + 警示卡修法),共 `M 9` + `?? 4`(.gitignore + 2 個 .php + 2 個 migration)。
+- **本次完整修法清單(對應 2.3.1 + 2.4.0)**:
+  - `pnl_snapshots` 新表 + `prices.source` ALTER(`migrations/010` / `011`)。
+  - `pnl_compute_alerts` 改用 **current streak** 觸發 banner(原 bug:用 all-time max_streak 觸發,歷史曾經 5 天連跌會永久亮警示卡)。
+  - `pnl_backfill_start` 加孤兒偵測:當 `latest` 那筆 `prev_close_value=0`,強制 rewind 到 first txn_date 重算。
+  - `ensure_pnl_snapshots` 內 `$haveData` 收斂為 `$allHaveData`,避免最後一個 sec 寫的 true 掩蓋前面缺漏。
+  - `pnl_persist_history` 的 `sec['id']` 改 `sec['security_id'](FK hotfix)。
+  - `pnl_read_history` 加 daily_diff 計算(每筆 snapshot 跨所有 sec 的當日 close vs 前一交易日 close,sum 進 long array)。
+  - `fetch_finmind_quotes` 顯式帶 `source='live'`(繞過 normalize 邊界)。
+  - 損益歷史 reports 頁:第二張圖從 unrealized 換成 daily_diff,中文 title/legend。
+  - Settings ⑨ 警示小節的「連續下跌」輸入框,改抓 `consecutive_threshold`(使用者設的門檻),不是 `consecutive_down_days`(當前 streak)。
+  - `.gitignore` 加 `/log/*.log.*` + `/memory/`(避免推送日誌與私人 memory 到公開 repo)。
+- 部署流程跟 2.3.0 / 2.3.1 一樣:rsync + bump version,然後使用者到 Settings → 外部 API 金鑰填 finmind_token,切報價來源為 finmind。
+- FinMind token 是免費註冊的,不必付費。註冊網址 `https://finmindtrade.com/`。
+- **部署到本地 Apache 10.35.32.11 之後需驗證**:user 登入 → dashboard 警示卡消失 → Settings → 外部 API 金鑰填入 token → 切報價來源為 finmind → 按「立即更新全部持股」看 log。
+
+## [2.3.1] - 2026-10-12
+
+### Added
+- **P&L 歷史補入 (`api/_pnl_history.php` + `migrations/011-prices-source.sql`)**（`api/index.php` + `api/_pnl.php` + 前端）
+  - 補算引擎原本只讀 `prices` 表現有收盤,遇「使用者未按過重新整理」的期間全部跳過 → 歷史曲線大量斷點。新增 `_pnl_history.php`,在 `ensure_pnl_snapshots` 偵測到「有持倉但缺價」時,依 `app_settings.quotes.provider` 分派:
+    - `twse_mis` → TWSE 個股日線 `STOCK_DAY?date=YYYYMM01&stockNo=...` (一個 symbol 一個月一次)
+    - `yahoo` → `query1.finance.yahoo.com/v8/finance/chart/<symbol>?period1=...&period2=...&interval=1d` (一個 symbol 整段一次)
+    - `fubon` / `manual` → no-op (跟現報價行為一致)
+  - 範圍預設 365 天 (`app_settings.pnl.historical.max_lookback_days` 可調),只補「今天以前」的日期,不打今天。
+  - 拉回來寫入 `prices` 表時以 `source='historical_import'` 標記,跟當下報價的 `source='live'` 區隔。同一日期後來被報價刷新時,`source` 不會被降級為 historical_import(同欄位 CASE WHEN 保護)。
+  - ROC 日期解析: `pnl_parse_roc_date('114/10/12') → { iso: '2025-10-12', yyyymmdd: '20251012' }`。
+
+- **`/pnl/snapshots/ensure` 多回傳 `historical_imported` / `historical_failed` / `historical_skipped`**
+  - Dashboard mount 補算後,若有 > 0 筆歷史被補入,顯示 `dash.historical.toast` 一則 toast,告知使用者「這些是重構的」。
+
+- **損益歷史圖表標示 source**（`frontend/js/pages/reports.js` + `frontend/js/i18n.js`）
+  - `pnl_read_history` 多回傳 `source` 陣列 (每筆對應 'live' 或 'historical_import')。
+  - SVG marker: 當日報價 → 實心圓,歷史補入 → 半透明空心圓。
+  - 圖表下方加圖例 (live / historical_import 兩種樣式)。
+
+- **i18n 新增**: `rpt.history.legend.live` / `rpt.history.legend.historical` / `dash.historical.toast`。
+
+### Changed
+- **`prices` 表加 `source` 欄位**（`migrations/011-prices-source.sql`）
+  - `TEXT NOT NULL DEFAULT 'live' CHECK(source IN ('live','historical_import'))`。
+  - 既有 row 自動視為 live,新 row 走 INSERT 路徑。
+  - 配合既有 `UNIQUE(security_id,date)` 衝突策略,live 不會被 historical 覆蓋。
+- **`persist_prices` 帶 `source` 欄位 INSERT/UPDATE**。
+- **`_pnl_history.php` 走 `app_settings.pnl.historical.max_lookback_days`**(預設 365)。
+
+### Notes
+- 全部 commit 仍留在本地 main;git status 預期 8M(2.3.0)+ 4N(`_pnl_history.php`、`011-prices-source.sql`、新版 mock-reports、新版 reports.js)共 8M+6N 待 push。
+- 歷史補入在網路層走對外(HTTP 出埠);若 VPS firewall 對外封鎖 `www.twse.com.tw` / `query1.finance.yahoo.com`,補入會失敗並回 `historical_failed`。可從 dashboard toast 觀察到。
+- 歷史補入不打今天,避免重複打當日報價的快取。
+
+## [2.3.0] - 2026-10-12
+
+### Added
+- **每日 / 每月損益快照（`pnl_snapshots` 表）**（`migrations/010-pnl-snapshots.sql` + `api/_pnl.php` + `api/index.php`）
+  - 新表 `pnl_snapshots` 存每日（granularity='D'）與每月（granularity='M'）的市值 / 現金 / 總資產 / 未實現 / 累計已實現 / 前一交易日市值 / 資料完整旗標。
+  - `UNIQUE(user_id, snapshot_date, granularity)` 為冪等錨點，多 tab 同時觸發補算安全。
+  - 補算引擎 `api/_pnl.php`：每個登入週期由 dashboard 觸發 `GET /pnl/snapshots/ensure`；偵測到缺日就逐日補；缺價的交易日整日跳過（圖表不會看到假資料）。
+  - 月度 snapshot 只寫「上一個已結束月」；當月不結算（產品決策，保持「已收尾」語意）。
+  - 不維護國定假日表：週末跳過即可，非交易日缺資料就沒點，圖表自然斷開。
+
+- **損益歷史報表（`GET /reports/pnl-history`）**（`api/index.php` + `frontend/js/pages/reports.js`）
+  - 從 `pnl_snapshots` 拉區間資料，回傳 total / market / cash / unrealized / realized / daily_change / daily_change_pct 平行陣列。
+  - 前端用自製 SVG 折線圖（無 Chart.js CDN 依賴）；缺資料日以空心圓標示。
+  - 報表頁 tabs 從 4 個（realized / unrealized / dividend / tax）縮為 2 個（history / dividends）；配息 tab 仍保留並實作 qty / amount_twd 的 FIFO 計算。
+
+- **Dashboard 警示卡**（`frontend/js/pages/dashboard.js` + `GET /reports/pnl-alerts`）
+  - mount 開頭 fire-and-forget 補算（`api.pnl.ensure().catch(noop)`），絕不擋主頁。
+  - 補算後拉 alerts，觸發時在 metric cards 上方顯示紅色 banner + 警示 chip。
+  - banner 含「調整門檻」連結，導到 `settings.html#alerts` 並高亮 ⑨ 區段。
+
+- **Settings ⑨ 損益警示門檻**（`frontend/js/pages/settings.js` + `GET/POST /settings/pnl-alerts`）
+  - 4 個可調參數：啟用開關、連續下跌 N 日（預設 3）、觀察 N 天（預設 5）、跌幅門檻 %（預設 -3）。
+  - 儲存走 `app_settings` 既有體系（`pnl.alerts.*`），不另開表。
+
+### Changed
+- **Reports 頁面大改**（`frontend/js/pages/reports.js` + `frontend/js/api-client.js` + `frontend/js/i18n.js`）
+  - 移除「已實現損益」、「未實現損益」、「稅務估算」三個 tab 與其 UI / 程式碼。
+  - `api-client.js` 移除 `reports.realized` / `reports.unrealized` / `reports.taxEstimate`；新增 `reports.pnlHistory` / `reports.pnlAlerts` / `pnl.ensure`。
+  - `i18n.js` 移除 `rpt.tab.realized` / `rpt.tab.unrealized` / `rpt.tab.tax` 與對應字串；新增 `rpt.tab.history` / `rpt.tab.dividends`（複數化統一）/ `rpt.history.*` / `dash.alert.*` / `set.alerts.*` / `set.anchor.alerts` / `set.sec.alerts`。
+- **API 端點清理**（`api/index.php`）
+  - 刪除 `GET /reports/unrealized` 整段（前端不再呼叫）。
+  - 補上 `GET /reports/dividends` 的 qty (FIFO) 與 amount_twd (FX) 計算 — 之前回傳 `qty="0"` / `amount_twd="0"`，是 dead payload。
+
+### Notes
+- 全部 commit 仍留在本地 main 分支，git status 預期有 9 個 modified + 4 個 new（含 migration、_pnl.php、reports.js、dashboard.js、settings.js、api-client.js、i18n.js、mock-reports.js、CHANGELOG.md）；待 push。
+- 補算觸發點刻意只做在 dashboard；其他頁面（holdings / transactions / reports / settings）登入後由 tab 切換或 refresh 動作間接走 `/pnl/snapshots/ensure`（下次若 reports 頁也需要即時歷史再補）。
+- 模擬模式（`mockReports.pnlHistory` / `pnlAlerts`）已對齊真實後端的 shape；前端開發時切到 mock 不需改 JS。
+
 ## [2.2.0] - 2026-10-07
 
 ### Added
