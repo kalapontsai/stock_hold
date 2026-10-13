@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-const STOCK_HOLD_VERSION = '2.4.0';
+const STOCK_HOLD_VERSION = '2.4.1';
 
 function env_value(string $key, ?string $default = null): ?string
 {

@@ -2,6 +2,15 @@
 
 本檔記錄 stock_hold 的所有重要變更。格式參考 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/),版本遵循 [Semantic Versioning](https://semver.org/lang/zh-TW/)。
 
+## [2.4.1] - 2026-10-13
+
+### Fixed
+- **Settings 損益警示輸入框無法儲存「連續下跌 N 個交易日」**（`frontend/js/pages/settings.js`）
+  - Root cause: 2.4.0 把讀取改成 `s.consecutive_threshold`,但 server `GET /settings/pnl-alerts` 從頭到尾就只回 `consecutive_down_days`(legacy storage key,user-tuned 門檻,跟 alert trigger 共用同一個值),所以 input 永遠拿到 `undefined` → 顯示空。
+  - Save 端沒改,POST 還是送對的 `consecutive_down_days`,所以 db 實際有寫入,但下次 reload input 就被清空,造成「設了等於沒設」的 UX bug。
+  - Fix: 讀寫統一用 `consecutive_down_days`(對齊 server schema,`api/index.php:1630` GET + `:1638` POST),並在兩處加上註解說明 storage key 跟 POST contract key 的一致性。
+  - Bump `STOCK_HOLD_VERSION` → 2.4.1(`api/bootstrap.php`)。
+
 ## [2.4.0] - 2026-10-12
 
 ### Added

@@ -505,12 +505,11 @@ export async function mountSettings(root) {
       const s = await api.rawRequest("GET", "/settings/pnl-alerts");
       if (s) {
         alertsEnabled.checked = !!s.enabled;
-        // Note: the response also carries `consecutive_streak_max` (the
-        // all-time longest drawdown) but we DO NOT pre-fill the input
-        // with it — the input is the *user-configured threshold* that
-        // triggers the banner, not a derived metric. Show max streak
-        // as a hint label instead so the user knows what to expect.
-        alertsCons.value = s.consecutive_threshold;
+        // The server stores the user-tuned threshold under the legacy key
+        // `consecutive_down_days` (app_settings: `pnl.alerts.consecutive_down_days`).
+        // It is the same value the alert trigger reads (api/_pnl.php:683).
+        // We round-trip the same key on save so the input never resets to blank.
+        alertsCons.value = s.consecutive_down_days;
         alertsWinDays.value = s.window_days;
         alertsWinPct.value = s.window_pct;
       }
@@ -529,6 +528,9 @@ export async function mountSettings(root) {
     try {
       await api.rawRequest("POST", "/settings/pnl-alerts", {
         enabled: alertsEnabled.checked,
+        // POST contract key is `consecutive_down_days` (api/index.php:1638).
+        // Sending `consecutive_threshold` would be silently dropped and the
+        // input would re-render blank on next page load.
         consecutive_down_days: Number(alertsCons.value),
         window_days: Number(alertsWinDays.value),
         window_pct: Number(alertsWinPct.value),
