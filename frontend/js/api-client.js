@@ -98,11 +98,11 @@ const MOCK_TABLE = {
   "GET /dashboard/summary":  mockDashboard.summary,
   "GET /dashboard/allocation": mockDashboard.allocation,
   "GET /dashboard/recent":   mockDashboard.recent,
-  "GET /reports/realized":   mockReports.realized,
-  "GET /reports/unrealized": mockHoldings.listHoldings,
+  "GET /pnl/snapshots/ensure":    async () => ({ ok: true, reason: "mock", created: 0 }),
+  "GET /reports/pnl-history":     mockReports.pnlHistory,
+  "GET /reports/pnl-alerts":      mockReports.pnlAlerts,
   "GET /reports/dividends":  mockReports.dividends,
   "GET /dividends":           mockReports.dividends,
-  "GET /reports/tax-estimate": mockReports.taxEstimate,
   "GET /prices/last-update": mockPrices.lastUpdate,
   "GET /skills":             mockSkills.listSkills,
   "GET /extension-keys":              mockExtensionKeys.listExtensionKeys,
@@ -315,10 +315,14 @@ export const dashboard = {
 
 /* Reports */
 export const reports = {
-  realized:    (q) => request("GET", "/reports/realized", null, { query: q }),
-  unrealized:  (q) => request("GET", "/reports/unrealized", null, { query: q }),
+  pnlHistory:  (q) => request("GET", "/reports/pnl-history", null, { query: q }),
+  pnlAlerts:   ()  => request("GET", "/reports/pnl-alerts"),
   dividends:   (q) => request("GET", "/dividends", null, { query: q }).then(listItems),
-  taxEstimate: (q) => request("GET", "/reports/tax-estimate", null, { query: q }),
+};
+
+/* P&L snapshot backfill (fire-and-forget on dashboard mount). */
+export const pnl = {
+  ensure:      ()  => request("GET", "/pnl/snapshots/ensure"),
 };
 
 /* Maintenance */

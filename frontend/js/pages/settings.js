@@ -39,6 +39,7 @@ export async function mountSettings(root) {
     <a class="settings-anchor__link" href="#appearance">${t("set.anchor.appearance")}</a>
     <a class="settings-anchor__link" href="#reconcile">${t("set.anchor.reconcile")}</a>
     <a class="settings-anchor__link" href="#maintenance">${t("set.anchor.maintenance")}</a>
+    <a class="settings-anchor__link" href="#alerts">${t("set.anchor.alerts")}</a>
   `;
   layout.appendChild(nav);
 
@@ -233,6 +234,7 @@ export async function mountSettings(root) {
       <select class="select" id="quote-provider">
         <option value="twse_mis">台灣證交所 MIS（免 API key）</option>
         <option value="yahoo">Yahoo Finance（免 API key，支援美股/台股/全球）</option>
+        <option value="finmind">FinMind v4 API（需 finmind_token，台股歷史 2010+）</option>
         <option value="fubon">Fubon Neo API（需 fubon_api_key）</option>
         <option value="manual">手動匯入</option>
       </select>
@@ -256,6 +258,8 @@ export async function mountSettings(root) {
   function paintProviderHint(provider) {
     if (provider === "fubon") {
       providerHint.textContent = t("set.quotes.fubon.providerHint");
+    } else if (provider === "finmind") {
+      providerHint.textContent = t("set.quotes.finmind.providerHint");
     } else if (provider === "yahoo") {
       providerHint.textContent = t("set.quotes.yahoo.providerHint");
     } else {
@@ -267,16 +271,23 @@ export async function mountSettings(root) {
   quoteSection.querySelector("#quote-provider").addEventListener("change", async (event) => {
     const newValue = event.target.value;
     paintProviderHint(newValue);
-    if (newValue !== "fubon") return;
+    // Only fubon and finmind require an external API key. yahoo / twse_mis
+    // work out of the box; manual is the "I'll enter prices by hand" mode.
+    if (newValue !== "fubon" && newValue !== "finmind") return;
+    const requiredProvider = newValue === "fubon" ? "fubon_api_key" : "finmind_token";
+    const noKeyTitleKey = newValue === "fubon" ? "set.quotes.fubon.noKey.title" : "set.quotes.finmind.noKey.title";
+    const noKeyBodyKey  = newValue === "fubon" ? "set.quotes.fubon.noKey.body"  : "set.quotes.finmind.noKey.body";
+    const goKey          = newValue === "fubon" ? "set.quotes.fubon.noKey.goToken" : "set.quotes.finmind.noKey.goToken";
+    const laterKey        = newValue === "fubon" ? "set.quotes.fubon.noKey.later"  : "set.quotes.finmind.noKey.later";
     try {
       const extKeys = await api.extensionKeys.list();
-      const hasKey = extKeys.some((k) => k.provider === "fubon_api_key");
+      const hasKey = extKeys.some((k) => k.provider === requiredProvider);
       if (hasKey) return; // already configured, no reminder needed
       const goToToken = await confirmDialog({
-        title: t("set.quotes.fubon.noKey.title"),
-        body: t("set.quotes.fubon.noKey.body"),
-        confirmLabel: t("set.quotes.fubon.noKey.goToken"),
-        cancelLabel: t("set.quotes.fubon.noKey.later"),
+        title: t(noKeyTitleKey),
+        body: t(noKeyBodyKey),
+        confirmLabel: t(goKey),
+        cancelLabel: t(laterKey),
         confirmTone: "primary",
       });
       if (goToToken) {
@@ -433,6 +444,104 @@ export async function mountSettings(root) {
     }
   });
   sections.appendChild(maintenanceSection);
+
+  // ───────── ⑨ 損益警示 ─────────
+  const alertsSection = section(t("set.sec.alerts"), "alerts");
+  alertsSection.querySelector("[data-host]").innerHTML = `
+    <p class="form-field__hint">${escapeHtml(t("set.alerts.intro"))}</p>
+    <form data-alerts-form>
+      <div class="form-field">
+        <label class="form-field__label">
+          <input type="checkbox" name="enabled" data-alerts-enabled>
+          ${escapeHtml(t("set.alerts.enabled"))}
+        </label>
+      </div>
+      <div class="form-field">
+        <label class="form-field__label" for="alerts-consecutive">${escapeHtml(t("set.alerts.consecutive"))}</label>
+        <input class="input" type="number" min="1" max="30" step="1" id="alerts-consecutive" name="consecutive_down_days" data-alerts-consecutive style="max-width: 8rem;">
+        <p class="form-field__hint">${escapeHtml(t("set.alerts.consecutive.hint"))}</p>
+      </div>
+      <div class="form-field">
+        <label class="form-field__label" for="alerts-window-days">${escapeHtml(t("set.alerts.windowDays"))}</label>
+        <input class="input" type="number" min="1" max="60" step="1" id="alerts-window-days" name="window_days" data-alerts-window-days style="max-width: 8rem;">
+      </div>
+      <div class="form-field">
+        <label class="form-field__label" for="alerts-window-pct">${escapeHtml(t("set.alerts.windowPct"))}</label>
+        <input class="input" type="number" min="-50" max="0" step="0.1" id="alerts-window-pct" name="window_pct" data-alerts-window-pct style="max-width: 8rem;">
+        <p class="form-field__hint">${escapeHtml(t("set.alerts.windowPct.hint"))}</p>
+      </div>
+      <div class="form-field" style="display: flex; gap: var(--space-2);">
+        <button type="submit" class="btn btn--primary">${escapeHtml(t("action.save"))}</button>
+        <span class="form-field__hint" data-alerts-status></span>
+      </div>
+    </form>
+  `;
+  sections.appendChild(alertsSection);
+
+  // Wire up the alerts form.
+  const alertsForm = alertsSection.querySelector("[data-alerts-form]");
+  const alertsEnabled = alertsForm.querySelector("[data-alerts-enabled]");
+  const alertsCons = alertsForm.querySelector("[data-alerts-consecutive]");
+  const alertsWinDays = alertsForm.querySelector("[data-alerts-window-days]");
+  const alertsWinPct = alertsForm.querySelector("[data-alerts-window-pct]");
+  const alertsStatus = alertsForm.querySelector("[data-alerts-status]");
+
+  // F-13 fix: deep-link from the dashboard banner (#alerts) should land
+  // inside the section, not behind a closed accordion. Anchor scrolling
+  // works on its own but we also want to flash the section so the user
+  // notices where they arrived.
+  if (window.location.hash === "#alerts") {
+    setTimeout(() => {
+      alertsSection.scrollIntoView({ behavior: "smooth", block: "start" });
+      alertsSection.style.outline = "2px solid var(--color-link)";
+      setTimeout(() => { alertsSection.style.outline = ""; }, 1500);
+    }, 50);
+  }
+
+  let alertsLoading = false;
+  (async () => {
+    alertsLoading = true;
+    try {
+      const s = await api.rawRequest("GET", "/settings/pnl-alerts");
+      if (s) {
+        alertsEnabled.checked = !!s.enabled;
+        // Note: the response also carries `consecutive_streak_max` (the
+        // all-time longest drawdown) but we DO NOT pre-fill the input
+        // with it — the input is the *user-configured threshold* that
+        // triggers the banner, not a derived metric. Show max streak
+        // as a hint label instead so the user knows what to expect.
+        alertsCons.value = s.consecutive_threshold;
+        alertsWinDays.value = s.window_days;
+        alertsWinPct.value = s.window_pct;
+      }
+    } catch (e) {
+      // ignore — leave defaults
+    } finally {
+      alertsLoading = false;
+    }
+  })();
+
+  alertsForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (alertsLoading) return;
+    alertsLoading = true;
+    alertsStatus.textContent = "…";
+    try {
+      await api.rawRequest("POST", "/settings/pnl-alerts", {
+        enabled: alertsEnabled.checked,
+        consecutive_down_days: Number(alertsCons.value),
+        window_days: Number(alertsWinDays.value),
+        window_pct: Number(alertsWinPct.value),
+      });
+      alertsStatus.textContent = t("set.alerts.saved");
+      toast(t("set.alerts.saved"), { tone: "success" });
+    } catch (err) {
+      alertsStatus.textContent = err?.message || "save failed";
+      toast(err?.message || "save failed", { tone: "error" });
+    } finally {
+      alertsLoading = false;
+    }
+  });
 
   // Apply i18n from saved locale
   const cur = getLocale();
@@ -813,6 +922,7 @@ function buildExtensionKeysBlock() {
           <label class="form-field__label" for="ext-provider">${escapeHtml(t("set.token.ext.provider"))}</label>
           <select class="select" id="ext-provider" name="provider">
             <option value="fubon_api_key">${escapeHtml(t("set.token.ext.provider.fubon_api_key"))}</option>
+            <option value="finmind_token">${escapeHtml(t("set.token.ext.provider.finmind_token"))}</option>
           </select>
         </div>
         <div class="form-field">

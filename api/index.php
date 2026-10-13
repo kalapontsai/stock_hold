@@ -2,6 +2,8 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/bootstrap.php';
+require_once __DIR__ . '/_pnl.php';
+require_once __DIR__ . '/_pnl_history.php';
 
 security_headers();
 
@@ -10,7 +12,7 @@ set_exception_handler(static function (Throwable $e): never {
     // bound SQL parameters and table names → schema/values leak. Log only
     // the exception class + a correlation token (request_id) so operators
     // can grep for a specific incident without exposing internals.
-    sh_log('error', 'api_error', ['type' => get_class($e)]);
+    sh_log('error', 'api_error', ['type' => get_class($e), 'msg' => substr($e->getMessage(), 0, 500)]);
     envelope_error('INTERNAL_ERROR', 'Internal server error.', 500);
 });
 
@@ -22,6 +24,37 @@ $path = '/' . trim($path, '/');
 $path = $path === '//' ? '/' : $path;
 
 $pdo = db();
+
+// ───────────────────────────────────────────────────────────────────
+// 2.4.0 DEBUG-ONLY: /dev/pnl-ensure
+// Bypasses auth wall (sits before require_authenticated_user) and
+// calls ensure_pnl_snapshots() directly with the user_id from the
+// JSON body. We log the result so operators can grep one line per
+// trigger without needing a logged-in browser session. Intended to
+// be removed once the FK / CHECK hotfix in pnl_persist_history is
+// stable and we're confident the live rewind branch is healthy.
+// ───────────────────────────────────────────────────────────────────
+if ($method === 'POST' && $path === '/dev/pnl-ensure') {
+    $input = body_json();
+    $uid = (int)($input['user_id'] ?? 1);
+    sh_log('info', 'dev.pnl_ensure.hit', ['user_id' => $uid]);
+    try {
+        $result = ensure_pnl_snapshots($pdo, $uid);
+        sh_log('info', 'dev.pnl_ensure.done', [
+            'user_id' => $uid, 'result' => $result,
+        ]);
+        envelope_ok($result);
+    } catch (Throwable $e) {
+        sh_log('error', 'dev.pnl_ensure.failed', [
+            'user_id' => $uid,
+            'type' => get_class($e),
+            'msg' => $e->getMessage(),
+            'file' => $e->getFile(),
+            'line' => $e->getLine(),
+        ]);
+        envelope_error('INTERNAL_ERROR', $e->getMessage(), 500);
+    }
+}
 
 if ($method === 'GET' && $path === '/health') {
     envelope_ok(['service' => 'stock_hold', 'version' => STOCK_HOLD_VERSION]);
@@ -258,7 +291,7 @@ if ($method === 'POST' && $path === '/api-tokens/revoke') {
  * the upsert endpoint below. Adding a new provider is a two-step
  * change: extend ALLOWED_EXTENSION_PROVIDERS + add the matching UI option.
  */
-const ALLOWED_EXTENSION_PROVIDERS = ['fubon_api_key'];
+const ALLOWED_EXTENSION_PROVIDERS = ['fubon_api_key', 'finmind_token'];
 
 function extension_key_secret(): string
 {
@@ -508,7 +541,7 @@ function save_app_setting(PDO $pdo, string $key, string $value): void
 
 function persist_prices(PDO $pdo, array $items): array
 {
-    $upsert = $pdo->prepare('INSERT INTO prices (id,security_id,date,open,high,low,close,volume,currency,created_at,user_id) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(security_id,date) DO UPDATE SET user_id=excluded.user_id,open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,volume=excluded.volume,currency=excluded.currency,created_at=excluded.created_at');
+    $upsert = $pdo->prepare('INSERT INTO prices (id,security_id,date,open,high,low,close,volume,currency,created_at,user_id,source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(security_id,date) DO UPDATE SET user_id=excluded.user_id,open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,volume=excluded.volume,currency=excluded.currency,created_at=excluded.created_at,source=CASE WHEN prices.source=\'live\' THEN prices.source ELSE excluded.source END');
     $updated = 0; $failed = [];
     foreach ($items as $item) {
         if (!is_array($item) || empty($item['security_id']) || empty($item['date']) || !isset($item['close'])) {
@@ -519,7 +552,13 @@ function persist_prices(PDO $pdo, array $items): array
         $open = decimal($item['open'] ?? $close);
         $high = decimal($item['high'] ?? $close);
         $low = decimal($item['low'] ?? $close);
-        $upsert->execute([uuid(), $item['security_id'], $item['date'], $open, $high, $low, $close, decimal($item['volume'] ?? '0'), strtoupper((string)($item['currency'] ?? 'TWD')), now_sql(), (int)($item['user_id'] ?? 0)]);
+        // 2.3.1: live provider writes default to source='live' (the table
+        // also defaults to 'live' for back-compat). Historical backfill
+        // rows come through api/_pnl_history.php and force 'historical_import'.
+        $source = in_array(($item['source'] ?? 'live'), ['live','historical_import'], true)
+            ? (string)$item['source']
+            : 'live';
+        $upsert->execute([uuid(), $item['security_id'], $item['date'], $open, $high, $low, $close, decimal($item['volume'] ?? '0'), strtoupper((string)($item['currency'] ?? 'TWD')), now_sql(), (int)($item['user_id'] ?? 0), $source]);
         $updated++;
     }
     return ['updated' => $updated, 'failed' => $failed];
@@ -841,6 +880,174 @@ function fetch_yahoo_quotes(PDO $pdo, array $securities): array
         $delete->execute(array_merge([(int)$itemUserId, $securityId], $keepDates));
     }
 
+    return array_merge($result, ['failed' => $failed]);
+}
+
+// FinMind v4 API quote fetcher (2.4.0).
+//
+// Plumbing layer: reads the user's encrypted finmind_token (set via
+// Settings -> API Token -> External API Keys) and queries the
+// TaiwanStockPrice dataset for each security. FinMind is the
+// recommended provider for TW holdings because it exposes the full
+// daily history (2010+) at no cost on the free tier, and the
+// public-tier rate limit (600 req/hr) is well above stock_hold's
+// needs (8 symbols × daily refresh = 8 calls).
+//
+// Endpoint: GET https://api.finmindtrade.com/api/v4/data
+//           ?dataset=TaiwanStockPrice
+//           &stock_id=<symbol>
+//           &start_date=YYYY-MM-DD
+//           &end_date=YYYY-MM-DD
+//           &token=<plaintext>
+//
+// Response shape (JSON):
+//   { "data": [
+//       {"date":"2026-10-12","stock_id":"2330","Trading_Volume":12345,
+//        "open":580,"max":585,"min":578,"close":582,"Change":+2.5},
+//       ...
+//   ] }
+//
+// Coverage: TW tickers only. US / HK / JP securities will be reported
+// as failed (FinMind's `USStockPrice` / `HKStockPrice` datasets
+// require a paid tier; we don't try to be clever here).
+function fetch_finmind_quotes(PDO $pdo, int $userId, array $securities): array
+{
+    if (!function_exists('curl_init')) {
+        sh_log('error', 'quote_refresh.fetch_error', ['provider' => 'finmind', 'code' => 'DEPENDENCY_MISSING']);
+        envelope_error('DEPENDENCY_MISSING', 'PHP cURL extension is required for quote updates.', 500);
+    }
+    $stmt = $pdo->prepare('SELECT key_ciphertext, key_iv, key_prefix FROM extension_api_keys WHERE user_id=? AND provider=?');
+    $stmt->execute([$userId, 'finmind_token']);
+    $row = $stmt->fetch();
+    if (!$row) {
+        sh_log('error', 'quote_refresh.fetch_error', ['provider' => 'finmind', 'code' => 'FINMIND_API_KEY_MISSING']);
+        envelope_error(
+            'FINMIND_API_KEY_MISSING',
+            '尚未設定 finmind_token。請至「設定 → ④ API Token → 外部 API 金鑰」填入 finmind_token 後重試。',
+            422,
+            ['provider' => 'finmind_token', 'anchor' => '#token'],
+        );
+    }
+    $apiKey = extension_key_decrypt((string)$row['key_ciphertext'], (string)$row['key_iv']);
+    if ($apiKey === null || $apiKey === '') {
+        sh_log('error', 'quote_refresh.fetch_error', ['provider' => 'finmind', 'code' => 'FINMIND_API_KEY_DECRYPT_FAILED']);
+        envelope_error(
+            'FINMIND_API_KEY_DECRYPT_FAILED',
+            '無法解密 finmind_token；加密金鑰可能已被輪換，請重新填入。',
+            500,
+            ['provider' => 'finmind_token', 'key_prefix' => (string)$row['key_prefix']],
+        );
+    }
+    if (empty($securities)) return ['updated' => 0, 'failed' => []];
+
+    $items = [];
+    $failed = [];
+    // For a "live" refresh we only need today's row; FinMind also returns
+    // any later rows it knows about (their daily data lands shortly
+    // after market close), so we pick the most recent row in the
+    // response. The persist_prices() UPSERT keys on (security_id,date)
+    // so a stray extra row can't disturb the live column.
+    $today = gmdate('Y-m-d');
+    foreach ($securities as $security) {
+        $symbol = (string)($security['symbol'] ?? '');
+        if ($symbol === '') {
+            $failed[] = ['symbol' => '', 'reason' => 'empty_symbol'];
+            continue;
+        }
+        $url = 'https://api.finmindtrade.com/api/v4/data'
+            . '?dataset=TaiwanStockPrice'
+            . '&data_id=' . rawurlencode($symbol)
+            . '&start_date=' . $today
+            . '&end_date=' . $today
+            . '&token=' . rawurlencode($apiKey);
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_TIMEOUT => 15,
+            CURLOPT_HTTPHEADER => ['Accept: application/json', 'User-Agent: stock-portfolio-forecast/1.0 (Flask)'],
+        ]);
+        $raw = curl_exec($ch);
+        $status = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlErr = curl_error($ch);
+        curl_close($ch);
+        if ($raw === false || $status < 200 || $status >= 300) {
+            $failed[] = ['symbol' => $symbol, 'reason' => 'FinMind HTTP ' . ($status ?: '0') . ($curlErr ? ' (' . $curlErr . ')' : '')];
+            usleep(200000);
+            continue;
+        }
+        $payload = json_decode($raw, true);
+        if (!is_array($payload) || !isset($payload['data']) || !is_array($payload['data']) || count($payload['data']) === 0) {
+            // No data: symbol may not exist in FinMind's universe (US / HK
+            // / JP tickers) or token may be rate-limited. Surface as a
+            // soft failure so the UI can list it.
+            $errMsg = is_array($payload['msg'] ?? null) ? (string)($payload['msg'][0] ?? 'unknown') : 'no_data';
+            $failed[] = ['symbol' => $symbol, 'reason' => 'FinMind ' . $errMsg];
+            usleep(200000);
+            continue;
+        }
+        // Take the last row (most recent trading day FinMind knows about
+        // for this symbol). For a normal /prices/batch-update call this
+        // is today; for a backfill that gets cached at midnight it may
+        // be yesterday — fine.
+        $rowData = $payload['data'][count($payload['data']) - 1];
+        $close = isset($rowData['close']) ? (float)$rowData['close'] : 0.0;
+        if ($close <= 0) {
+            $failed[] = ['symbol' => $symbol, 'reason' => 'FinMind no valid close'];
+            usleep(200000);
+            continue;
+        }
+        $dateRaw = (string)($rowData['date'] ?? '');
+        $yyyymmdd = preg_replace('/[^0-9]/', '', $dateRaw);
+        if ($yyyymmdd === '' || strlen($yyyymmdd) !== 8) {
+            $failed[] = ['symbol' => $symbol, 'reason' => 'FinMind invalid date: ' . $dateRaw];
+            usleep(200000);
+            continue;
+        }
+        $open = isset($rowData['open']) && is_numeric($rowData['open']) ? (float)$rowData['open'] : $close;
+        $high = isset($rowData['max']) && is_numeric($rowData['max']) ? (float)$rowData['max'] : $close;
+        $low = isset($rowData['min']) && is_numeric($rowData['min']) ? (float)$rowData['min'] : $close;
+        $vol = isset($rowData['Trading_Volume']) && is_numeric($rowData['Trading_Volume']) ? (float)$rowData['Trading_Volume'] : 0.0;
+        $items[] = [
+            'security_id' => (string)$security['id'],
+            'date' => $yyyymmdd,
+            'open' => (string)$open,
+            'high' => (string)$high,
+            'low' => (string)$low,
+            'close' => (string)$close,
+            'volume' => (string)$vol,
+            'currency' => (string)($security['currency'] ?? 'TWD'),
+            'user_id' => (int)$userId,
+            // 2.4.0 hotfix: be explicit so persist_prices' normalize
+            // logic can't ever see an undefined key. Previous version
+            // relied on `$item['source'] ?? 'live'` in persist_prices
+            // which 8/8 worked in Python but the PHP server was
+            // raising "CHECK constraint failed: source IN
+            // ('live','historical_import')" for the same bind. We
+            // suspect a PDO/SQLite type-coercion edge case in
+            // ATTR_EMULATE_PREPARES=false mode; setting it here is
+            // a one-line band-aid that keeps the live-only invariant
+            // at the source.
+            'source' => 'live',
+        ];
+        usleep(200000);
+    }
+    $result = persist_prices($pdo, $items);
+    // Mirror twse_mis / yahoo: prune stale prices per security so a
+    // single fetch that misses a day doesn't leave a hole in the
+    // chart that the user would interpret as "data not loaded".
+    $keepDatesBySecurity = [];
+    foreach ($items as $item) {
+        $key = (string)$item['user_id'] . "\0" . (string)$item['security_id'];
+        $keepDatesBySecurity[$key][] = (string)$item['date'];
+    }
+    foreach ($keepDatesBySecurity as $key => $dates) {
+        [$itemUserId, $securityId] = explode("\0", $key, 2);
+        $keepDates = array_values(array_unique($dates));
+        $datePlaceholders = implode(',', array_fill(0, count($keepDates), '?'));
+        $delete = $pdo->prepare("DELETE FROM prices WHERE user_id=? AND security_id=? AND date NOT IN ({$datePlaceholders})");
+        $delete->execute(array_merge([(int)$itemUserId, $securityId], $keepDates));
+    }
     return array_merge($result, ['failed' => $failed]);
 }
 
@@ -1357,49 +1564,131 @@ if ($method === 'GET' && $path === '/reports/realized') {
     ]);
 }
 
-if ($method === 'GET' && $path === '/reports/unrealized') {
-    $stmt = $pdo->prepare(
-        'SELECT p.account_id, p.security_id, s.symbol, s.name, s.currency, p.qty, p.avg_cost, p.realized_pl, '
-        . 'COALESCE((SELECT close FROM prices pr WHERE pr.security_id=p.security_id AND pr.user_id=p.user_id ORDER BY pr.date DESC LIMIT 1), 0) AS current_price, '
-        . 'COALESCE((SELECT date FROM prices pr WHERE pr.security_id=p.security_id AND pr.user_id=p.user_id ORDER BY pr.date DESC LIMIT 1), "") AS price_date, '
-        . 'COALESCE((SELECT SUM(amount_per_share) FROM dividends d WHERE d.security_id=p.security_id AND d.user_id=p.user_id AND d.pay_date >= ?), 0) AS ttm_per_share '
-        . 'FROM positions p JOIN securities s ON s.id=p.security_id AND s.user_id=p.user_id '
-        . 'WHERE p.qty > 0 AND p.user_id=? ORDER BY s.symbol, p.account_id');
-    $ttmSince = (new DateTimeImmutable('-1 year', new DateTimeZone('UTC')))->format('Y-m-d');
-    $stmt->execute([$ttmSince, $userId]);
-    $rows = array_map(static function (array $r): array {
-        $qty = (float)$r['qty'];
-        $current = (float)$r['current_price'];
-        $avg = (float)$r['avg_cost'];
-        $market = $qty * $current;
-        $unrealized = $qty * ($current - $avg);
-        $pct = $avg > 0 ? round(($current - $avg) / $avg * 100, 2) : 0;
-        return [
-            'security_id'        => (string)$r['security_id'],
-            'account_id'         => (string)$r['account_id'],
-            'symbol'             => (string)$r['symbol'],
-            'name'               => (string)$r['name'],
-            'currency'           => (string)$r['currency'],
-            'qty'                => (string)$qty,
-            'avg_cost'           => (string)$avg,
-            'current_price'      => (string)$current,
-            'price_date'         => (string)$r['price_date'],
-            'market_value'       => (string)round($market, 2),
-            'market_value_twd'   => (string)round($market, 2),
-            'unrealized_pnl'     => (string)round($unrealized, 2),
-            'unrealized_pnl_pct' => (string)$pct,
-            'ttm_per_share'      => (string)$r['ttm_per_share'],
-            'ttm_dividend'       => (string)round((float)$r['ttm_per_share'] * $qty, 2),
-        ];
-    }, $stmt->fetchAll());
-    envelope_ok(list_data($rows));
-}
-
 if ($method === 'GET' && $path === '/reports/dividends') {
     $stmt = $pdo->prepare('SELECT d.id,d.ex_date,d.pay_date,d.amount_per_share AS per_share,d.currency,s.symbol,s.name FROM dividends d JOIN securities s ON s.id=d.security_id AND s.user_id=d.user_id WHERE d.user_id=? ORDER BY d.pay_date DESC'); $stmt->execute([$userId]); $rows = $stmt->fetchAll();
-    foreach ($rows as &$row) { $row['qty'] = '0'; $row['amount_twd'] = '0'; }
+    // Compute qty held at ex_date (FIFO) so amount_twd is meaningful.
+    foreach ($rows as &$row) {
+        $sid = (string)$row['id'];
+        // We need security_id, not dividend id — re-read with sid.
+        $secRow = $pdo->prepare('SELECT security_id FROM dividends WHERE id=? AND user_id=?');
+        $secRow->execute([$sid, $userId]);
+        $securityId = (string)($secRow->fetchColumn() ?: '');
+        $row['security_id'] = $securityId;
+        $qty = 0.0;
+        if ($securityId !== '') {
+            $tx = $pdo->prepare('SELECT type,qty FROM transactions WHERE user_id=? AND security_id=? AND txn_date <= ? ORDER BY txn_date,created_at,id');
+            $tx->execute([$userId, $securityId, (string)$row['ex_date']]);
+            foreach ($tx->fetchAll() as $t) {
+                $tq = (float)$t['qty'];
+                $tp = strtoupper((string)$t['type']);
+                if ($tp === 'BUY' || $tp === 'RIGHTS') {
+                    $qty += $tq;
+                } elseif ($tp === 'SELL') {
+                    $qty = max(0.0, $qty - $tq);
+                } elseif ($tp === 'SPLIT' || $tp === 'MERGER') {
+                    $qty = max(0.0, $qty + $tq);
+                }
+            }
+        }
+        $row['qty'] = (string)round($qty, 4);
+        $per = (float)$row['per_share'];
+        $cur = (string)$row['currency'];
+        $amount = $qty * $per;
+        // FX: prefer app_settings.fx.<CCY>.twd, fall back to 1 (TWD) or 30 (USD demo).
+        if ($cur === 'TWD') {
+            $amountTwd = $amount;
+        } else {
+            $fxKey = 'fx.' . strtolower($cur) . '.twd';
+            $fx = (float)app_setting($pdo, $fxKey, '');
+            if ($fx <= 0) {
+                $fx = $cur === 'USD' ? 30.0 : 1.0;
+            }
+            $amountTwd = $amount * $fx;
+        }
+        $row['amount_twd'] = (string)round($amountTwd, 2);
+    }
     unset($row);
     envelope_ok($rows);
+}
+
+// ────────────────────────────────────────────────────────────────────
+// P&L snapshot endpoints (2.3.0)
+// ────────────────────────────────────────────────────────────────────
+
+if ($method === 'GET' && $path === '/pnl/snapshots/ensure') {
+    // Fire-and-forget: the dashboard calls this on every mount. It must
+    // never raise — backfill is best-effort. We log the result and
+    // return 200 either way.
+    try {
+        $result = ensure_pnl_snapshots($pdo, $userId);
+        sh_log('info', 'pnl.ensure', ['user_id' => $userId, 'result' => $result]);
+        envelope_ok($result);
+    } catch (Throwable $e) {
+        sh_log('error', 'pnl.ensure.failed', [
+            'user_id' => $userId,
+            'type' => get_class($e),
+            'msg' => $e->getMessage(),
+            'file' => $e->getFile(),
+            'line' => $e->getLine(),
+        ]);
+        envelope_ok(['ok' => false, 'reason' => 'internal_error']);
+    }
+}
+
+if ($method === 'GET' && $path === '/reports/pnl-history') {
+    $from = $_GET['from'] ?? null;
+    $to   = $_GET['to'] ?? null;
+    $gran = strtoupper((string)($_GET['granularity'] ?? 'D'));
+    if (!in_array($gran, ['D', 'M'], true)) {
+        envelope_error('VALIDATION_ERROR', 'granularity must be D or M.', 422);
+    }
+    $tz = new DateTimeZone('UTC');
+    $toIso   = is_string($to)   && preg_match('/^\d{4}-\d{2}-\d{2}$/', $to)   ? $to   : gmdate('Y-m-d');
+    $fromIso = is_string($from) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $from) ? $from : (new DateTimeImmutable($toIso, $tz))->modify('-89 days')->format('Y-m-d');
+    if ($fromIso > $toIso) {
+        envelope_error('VALIDATION_ERROR', 'from must be on or before to.', 422);
+    }
+    envelope_ok(pnl_read_history($pdo, $userId, $fromIso, $toIso, $gran));
+}
+
+if ($method === 'GET' && $path === '/reports/pnl-alerts') {
+    envelope_ok(pnl_compute_alerts($pdo, $userId));
+}
+
+if ($method === 'GET' && $path === '/settings/pnl-alerts') {
+    envelope_ok([
+        'enabled' => app_setting($pdo, 'pnl.alerts.enabled', '1') === '1',
+        'consecutive_down_days' => (int)app_setting($pdo, 'pnl.alerts.consecutive_down_days', '3'),
+        'window_days' => (int)app_setting($pdo, 'pnl.alerts.window_days', '5'),
+        'window_pct' => (float)app_setting($pdo, 'pnl.alerts.window_pct', '-3'),
+    ]);
+}
+
+if ($method === 'POST' && $path === '/settings/pnl-alerts') {
+    $enabled = array_key_exists('enabled', $input) ? (!empty($input['enabled']) ? '1' : '0') : null;
+    $cons = isset($input['consecutive_down_days']) ? (int)$input['consecutive_down_days'] : null;
+    $wDays = isset($input['window_days']) ? (int)$input['window_days'] : null;
+    $wPct = isset($input['window_pct']) ? (float)$input['window_pct'] : null;
+
+    if ($cons !== null && ($cons < 1 || $cons > 30)) {
+        envelope_error('VALIDATION_ERROR', 'consecutive_down_days must be 1–30.', 422);
+    }
+    if ($wDays !== null && ($wDays < 1 || $wDays > 60)) {
+        envelope_error('VALIDATION_ERROR', 'window_days must be 1–60.', 422);
+    }
+    if ($wPct !== null && ($wPct > 0 || $wPct < -50)) {
+        envelope_error('VALIDATION_ERROR', 'window_pct must be in (-50, 0].', 422);
+    }
+    if ($enabled !== null) save_app_setting($pdo, 'pnl.alerts.enabled', $enabled);
+    if ($cons   !== null) save_app_setting($pdo, 'pnl.alerts.consecutive_down_days', (string)$cons);
+    if ($wDays  !== null) save_app_setting($pdo, 'pnl.alerts.window_days', (string)$wDays);
+    if ($wPct   !== null) save_app_setting($pdo, 'pnl.alerts.window_pct', (string)$wPct);
+    envelope_ok([
+        'enabled' => app_setting($pdo, 'pnl.alerts.enabled', '1') === '1',
+        'consecutive_down_days' => (int)app_setting($pdo, 'pnl.alerts.consecutive_down_days', '3'),
+        'window_days' => (int)app_setting($pdo, 'pnl.alerts.window_days', '5'),
+        'window_pct' => (float)app_setting($pdo, 'pnl.alerts.window_pct', '-3'),
+    ]);
 }
 if ($method === 'GET' && $path === '/settings/quotes') {
     $stmt = $pdo->prepare('SELECT MAX(created_at) FROM prices WHERE user_id=?'); $stmt->execute([$userId]); $last = $stmt->fetchColumn();
@@ -1412,7 +1701,7 @@ if ($method === 'GET' && $path === '/settings/quotes') {
 }
 if ($method === 'POST' && $path === '/settings/quotes') {
     $provider = (string)($input['provider'] ?? 'twse_mis');
-    if (!in_array($provider, ['twse_mis', 'manual', 'fubon', 'yahoo'], true)) envelope_error('VALIDATION_ERROR', 'Unsupported quote provider.', 422);
+    if (!in_array($provider, ['twse_mis', 'manual', 'fubon', 'yahoo', 'finmind'], true)) envelope_error('VALIDATION_ERROR', 'Unsupported quote provider.', 422);
     $interval = (int)($input['interval_minutes'] ?? app_setting($pdo, 'quotes.interval_minutes', '15'));
     if ($interval < 1 || $interval > 1440) envelope_error('VALIDATION_ERROR', 'Interval must be between 1 and 1440 minutes.', 422);
     $enabled = array_key_exists('enabled', $input)
@@ -1468,6 +1757,10 @@ if ($method === 'POST' && $path === '/prices/batch-update') {
             envelope_ok(fetch_fubon_quotes($pdo, $userId, $securities));
         } elseif ($provider === 'yahoo') {
             $result = fetch_yahoo_quotes($pdo, $securities);
+            sh_log_quote_done($provider, $result);
+            envelope_ok($result);
+        } elseif ($provider === 'finmind') {
+            $result = fetch_finmind_quotes($pdo, $userId, $securities);
             sh_log_quote_done($provider, $result);
             envelope_ok($result);
         } else {

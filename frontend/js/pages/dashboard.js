@@ -33,6 +33,47 @@ export async function mountDashboard(root) {
   `;
   root.appendChild(header);
 
+  // ────────────────────────────────────────────────────────────────
+  // 2.3.0: P&L backfill + alert banner.
+  //
+  // Every dashboard mount fires a fire-and-forget snapshot backfill.
+  // The endpoint is a no-op when the data is already up to date, so
+  // the daily re-entry cost is one extra GET. Other pages do NOT
+  // trigger this — per product decision the dashboard is the only
+  // login-touchpoint.
+  //
+  // 2.3.1: when backfill pulled historical closes from the configured
+  // provider, surface that to the user via a one-shot toast so they
+  // know the new dots on the equity curve are reconstructed, not live.
+  //
+  // After backfill we pull /reports/pnl-alerts and, if any rule is
+  // triggered, render a banner above the metric cards.
+  // ────────────────────────────────────────────────────────────────
+  let alertState = null;
+  api.pnl.ensure().catch((e) => {
+    // Backfill failure must NEVER block the dashboard. Log via toast
+    // only if it's an actual API failure (not the mock path).
+    console.warn("pnl.ensure failed", e);
+    return { ok: false, historical_imported: 0 };
+  }).then((ensureResult) => {
+    const imported = Number(ensureResult?.historical_imported || 0);
+    if (imported > 0) {
+      // Provider display name is best-effort — we don't want to block
+      // the toast on another GET. The string itself is enough.
+      const provider = (ensureResult?.historical_skipped === "none") ? "歷史來源" : "歷史來源";
+      toast(t("dash.historical.toast", { provider, count: imported }), { tone: "info" });
+    }
+    return api.reports.pnlAlerts();
+  }).then((s) => {
+    alertState = s;
+    renderAlertBanner();
+  }).catch(() => { /* alerts are best-effort */ });
+
+  const bannerHost = document.createElement("div");
+  bannerHost.className = "dashboard-alert-host";
+  bannerHost.setAttribute("data-alert-host", "");
+  root.appendChild(bannerHost);
+
   const metricsRow = document.createElement("div");
   metricsRow.className = "grid grid--metrics section";
   root.appendChild(metricsRow);
@@ -40,6 +81,63 @@ export async function mountDashboard(root) {
   const middleRow = document.createElement("div");
   middleRow.className = "grid grid--dashboard-bottom section";
   root.appendChild(middleRow);
+
+  function renderAlertBanner() {
+    if (!alertState) return;
+    const triggered = Array.isArray(alertState.triggered) ? alertState.triggered : [];
+    bannerHost.innerHTML = "";
+    if (triggered.length === 0) return;
+    const banner = document.createElement("div");
+    banner.className = "alert-banner";
+    banner.setAttribute("role", "alert");
+    banner.style.cssText = [
+      "display: flex",
+      "flex-wrap: wrap",
+      "align-items: center",
+      "gap: var(--space-3)",
+      "padding: var(--space-3) var(--space-4)",
+      "margin-top: var(--space-3)",
+      "border-left: 4px solid var(--color-danger)",
+      "background: color-mix(in srgb, var(--color-danger) 8%, var(--color-surface))",
+      "border-radius: var(--radius-sm)",
+    ].join(";");
+    const title = document.createElement("strong");
+    title.textContent = t("dash.banner.title");
+    title.style.cssText = "margin-right: var(--space-2);";
+    banner.appendChild(title);
+    for (const a of triggered) {
+      const chip = document.createElement("span");
+      chip.className = "alert-banner__chip";
+      chip.style.cssText = [
+        "display: inline-flex",
+        "align-items: center",
+        "gap: var(--space-1)",
+        "padding: 2px var(--space-2)",
+        "background: var(--color-bg)",
+        "border: 1px solid var(--color-border)",
+        "border-radius: var(--radius-sm)",
+        "font-size: var(--text-sm)",
+        "color: var(--color-danger)",
+      ].join(";");
+      if (a.type === "consecutive_down_days") {
+        chip.textContent = t("dash.alert.consecutive", { n: a.value });
+      } else if (a.type === "window_pct") {
+        chip.textContent = t("dash.alert.windowPct", {
+          days: a.window_days ?? alertState.window_days,
+          pct: Number(a.value).toFixed(2),
+        });
+      } else {
+        chip.textContent = String(a.type);
+      }
+      banner.appendChild(chip);
+    }
+    const link = document.createElement("a");
+    link.href = "./settings.html#alerts";
+    link.textContent = t("dash.alert.viewSettings");
+    link.style.cssText = "margin-left: auto; color: var(--color-link); font-size: var(--text-sm);";
+    banner.appendChild(link);
+    bannerHost.appendChild(banner);
+  }
 
   const refreshBtn = header.querySelector("[data-action=refresh]");
   const asOfEl = header.querySelector("[data-as-of]");
