@@ -79,7 +79,7 @@ function pnl_backfill_history(PDO $pdo, int $userId, array $securities, array $d
         'SELECT s.symbol, MIN(t.txn_date) AS first_buy '
         . 'FROM transactions t '
         . 'JOIN securities s ON s.id = t.security_id AND s.user_id = t.user_id '
-        . 'WHERE t.user_id = ? AND t.action = \'BUY\' '
+        . 'WHERE t.user_id = ? AND t.type = \'BUY\' '
         . 'GROUP BY s.symbol'
     );
     $symbolEarliestStmt->execute([$userId]);

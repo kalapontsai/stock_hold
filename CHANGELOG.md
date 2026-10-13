@@ -2,6 +2,17 @@
 
 本檔記錄 stock_hold 的所有重要變更。格式參考 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/),版本遵循 [Semantic Versioning](https://semver.org/lang/zh-TW/)。
 
+## [2.4.2] - 2026-10-13
+
+### Fixed
+- **`pnl_backfill_history` SQL typo throws PDOException `no such column: t.action`**（`api/_pnl_history.php:82`）
+  - Root cause: 2.3.1 新增的 `pnl_backfill_history` 在 per-symbol lookback 邏輯裡用了 `t.action = 'BUY'`,但 `transactions` 表的欄位名是 `type`(從 `migrations/001-initial.sql` 開始就是 `type`,沒 `action`)。其他 30+ 處讀寫 `transactions` 全部都用 `type`,**只有這一行寫錯**。
+  - 為何之前沒人撞到:此 SQL 是 `pnl_backfill_history` 的第一步,在 `ensure_pnl_snapshots` 內只有 `historical_import` 路徑才會走,需要 `prices` 資料不足以撐 30 天門檻 + user 有 BUY 交易 + 2.4.0 修的 `historical_imported` 機制觸發才會跑到。2.4.0 之前 `ensure_pnl_snapshots` 早就 return `up_to_date` 短路了。
+  - 症狀: `GET /pnl/snapshots/ensure` 回 `{ok: false, reason: "internal_error"}`(api/index.php:1602 的 catch 接住),log 寫 `pnl.ensure.failed type=PDOException msg=... no such column: t.action file=_pnl_history.php line=83`。`pnl_snapshots` 從此再也沒被寫入 → `/frontend/reports.html` 永遠顯示「還沒有損益快照」。
+  - Fix: 1 字之差,`t.action` → `t.type`。
+  - 確認: 全 repo `grep -rn "t\.action"` 為 0 hits,沒其他漏網 typo。
+  - Bump `STOCK_HOLD_VERSION` → 2.4.2(`api/bootstrap.php`)。
+
 ## [2.4.1] - 2026-10-13
 
 ### Fixed
