@@ -18,8 +18,13 @@ declare(strict_types=1);
  *   fubon      → NOT_IMPLEMENTED (binary SDK limitation, same as live)
  *   manual     → no-op (user has no quote source, can't backfill)
  *
- * Range bound: `app_settings.pnl.historical.max_lookback_days` (default
- * 365). Days further back than that are not requested.
+ * Range bound: 2.4.0 — we no longer hard-cap lookback at a fixed
+ * number of days. Instead, for each symbol we cap at the earlier of
+ * (a) its first BUY transaction date for this user, or (b) the
+ * provider's own earliest available history (FinMind 2010+, Yahoo
+ * varies by symbol). The user-tunable `max_lookback_days` (default
+ * 365) is kept as a safety floor for the case where a user has held
+ * a symbol since before that floor.
  *
  * SSRF: every URL is built from a hard-coded host + a user-supplied
  * symbol + a numeric YYYYMM. No redirect following, no user-controlled
@@ -55,15 +60,51 @@ function pnl_backfill_history(PDO $pdo, int $userId, array $securities, array $d
         return ['imported' => 0, 'failed' => [], 'skipped' => 'fubon_not_implemented'];
     }
 
-    // Cap lookback per user-tunable setting (default 365).
+    // 2.4.0: todayIso is interpreted in the user's local timezone
+    // (Asia/Taipei). The previous gmdate('Y-m-d') was UTC, which
+    // meant a request fired at 06:00 Taipei time on Monday was
+    // already stamped Sunday and we skipped the Monday trading day
+    // when backfilling. We compare everything in YYYY-MM-DD strings,
+    // so converting back to ISO for the range is enough.
+    $todayIso = (new DateTimeImmutable('now', new DateTimeZone('Asia/Taipei')))
+        ->format('Y-m-d');
     $maxLookback = (int)app_setting($pdo, 'pnl.historical.max_lookback_days', '365');
     if ($maxLookback < 1) $maxLookback = 365;
-    $todayIso = gmdate('Y-m-d');
-    $earliestIso = (new DateTimeImmutable($todayIso, new DateTimeZone('UTC')))
+    // Per-symbol earliest BUY date for this user, plus the safety
+    // floor (max_lookback_days from today). The actual backfill range
+    // becomes max(per-symbol first-buy, safety floor) so we never ask
+    // a provider for history it doesn't have, and we never ask for
+    // history before the user actually held the symbol.
+    $symbolEarliestStmt = $pdo->prepare(
+        'SELECT s.symbol, MIN(t.txn_date) AS first_buy '
+        . 'FROM transactions t '
+        . 'JOIN securities s ON s.id = t.security_id AND s.user_id = t.user_id '
+        . 'WHERE t.user_id = ? AND t.action = \'BUY\' '
+        . 'GROUP BY s.symbol'
+    );
+    $symbolEarliestStmt->execute([$userId]);
+    $symbolFirstBuy = [];
+    foreach ($symbolEarliestStmt->fetchAll() as $r) {
+        $symbolFirstBuy[(string)$r['symbol']] = (string)$r['first_buy'];
+    }
+    $safetyFloorIso = (new DateTimeImmutable($todayIso, new DateTimeZone('Asia/Taipei')))
         ->modify('-' . $maxLookback . ' days')->format('Y-m-d');
-    $dates = array_values(array_filter($dates, static function (string $d) use ($earliestIso, $todayIso): bool {
-        return $d >= $earliestIso && $d < $todayIso; // strictly past
+    $dates = array_values(array_filter($dates, static function (string $d) use ($todayIso): bool {
+        return $d < $todayIso; // strictly past
     }));
+    // For dates that pre-date every symbol's first BUY, drop them.
+    // (Defense against stale cached date lists that span symbol history
+    // longer than the user has actually held anything.)
+    if (!empty($symbolFirstBuy)) {
+        $earliestUserBuy = min($symbolFirstBuy);
+        $dates = array_values(array_filter($dates, static function (string $d) use ($earliestUserBuy, $safetyFloorIso): bool {
+            return $d >= max($earliestUserBuy, $safetyFloorIso);
+        }));
+    } else {
+        $dates = array_values(array_filter($dates, static function (string $d) use ($safetyFloorIso): bool {
+            return $d >= $safetyFloorIso;
+        }));
+    }
     if (empty($dates)) {
         return ['imported' => 0, 'failed' => [], 'skipped' => 'beyond_lookback'];
     }

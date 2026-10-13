@@ -406,7 +406,13 @@ function pnl_compute_day(PDO $pdo, int $userId, string $iso): ?array
  */
 function ensure_pnl_snapshots(PDO $pdo, int $userId): array
 {
-    $todayIso = gmdate('Y-m-d');
+    // 2.4.0: todayIso in Asia/Taipei — see _pnl_history.php for full
+    // rationale. Without this, requests fired before 08:00 Taipei time
+    // get stamped with yesterday's UTC date, and ensure_pnl_snapshots
+    // ends up with start > todayIso so it short-circuits to up_to_date
+    // even when there is a fresh trading day to record.
+    $todayIso = (new DateTimeImmutable('now', new DateTimeZone('Asia/Taipei')))
+        ->format('Y-m-d');
     $start = pnl_backfill_start($pdo, $userId, $todayIso);
     if ($start === null) {
         return ['ok' => true, 'reason' => 'no_transactions', 'created' => 0];

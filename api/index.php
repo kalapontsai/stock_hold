@@ -25,37 +25,6 @@ $path = $path === '//' ? '/' : $path;
 
 $pdo = db();
 
-// ───────────────────────────────────────────────────────────────────
-// 2.4.0 DEBUG-ONLY: /dev/pnl-ensure
-// Bypasses auth wall (sits before require_authenticated_user) and
-// calls ensure_pnl_snapshots() directly with the user_id from the
-// JSON body. We log the result so operators can grep one line per
-// trigger without needing a logged-in browser session. Intended to
-// be removed once the FK / CHECK hotfix in pnl_persist_history is
-// stable and we're confident the live rewind branch is healthy.
-// ───────────────────────────────────────────────────────────────────
-if ($method === 'POST' && $path === '/dev/pnl-ensure') {
-    $input = body_json();
-    $uid = (int)($input['user_id'] ?? 1);
-    sh_log('info', 'dev.pnl_ensure.hit', ['user_id' => $uid]);
-    try {
-        $result = ensure_pnl_snapshots($pdo, $uid);
-        sh_log('info', 'dev.pnl_ensure.done', [
-            'user_id' => $uid, 'result' => $result,
-        ]);
-        envelope_ok($result);
-    } catch (Throwable $e) {
-        sh_log('error', 'dev.pnl_ensure.failed', [
-            'user_id' => $uid,
-            'type' => get_class($e),
-            'msg' => $e->getMessage(),
-            'file' => $e->getFile(),
-            'line' => $e->getLine(),
-        ]);
-        envelope_error('INTERNAL_ERROR', $e->getMessage(), 500);
-    }
-}
-
 if ($method === 'GET' && $path === '/health') {
     envelope_ok(['service' => 'stock_hold', 'version' => STOCK_HOLD_VERSION]);
 }
