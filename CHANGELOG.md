@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.5.0] - 2026-11-19
+
+- 修正共同基金（例如 `WMF005213`）無法由交易所行情取得現價的問題。
+- 新增元大基金 NAV provider、基金目錄查詢、`fund_nav` 價格來源與排程 CLI；基金代號 `1250` 對應元大台灣卓越50 ETF 連結基金 TISA 類型。
+- NAV 價格會寫入既有 `prices`、持倉與 P&L 流程，並避免被交易所歷史回填覆蓋。
+
 本檔記錄 stock_hold 的所有重要變更。格式參考 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/),版本遵循 [Semantic Versioning](https://semver.org/lang/zh-TW/)。
 
 ## [2.4.2] - 2026-10-13

@@ -834,6 +834,8 @@ function openSecurityModal(row, securities, refresh) {
     exchange: escapeHtml(row?.exchange ?? "TW"),
     currency: escapeHtml(row?.currency ?? "TWD"),
     type: escapeHtml(row?.type ?? "STOCK"),
+    navSource: escapeHtml(row?.nav_source ?? ""),
+    navCode: escapeHtml(row?.nav_code ?? ""),
   };
   m.body.innerHTML = `
     <form>
@@ -871,8 +873,85 @@ function openSecurityModal(row, securities, refresh) {
           </select>
         </div>
       </div>
+      <hr style="border:none; border-top:1px solid var(--color-border); margin:var(--space-4) 0;">
+      <div class="form-field">
+        <label class="form-field__label">價格來源</label>
+        <select class="select" name="nav_source">
+          <option value="" ${v.navSource === "" ? "selected" : ""}>交易所報價（股票／ETF）</option>
+          <option value="yuanta" ${v.navSource === "yuanta" ? "selected" : ""}>基金淨值（元大基金）</option>
+        </select>
+        <span class="form-field__hint">共同基金受益權單位沒有交易所代號，只能用基金公司公告的「單位淨值」計價。選擇後請填入基金代號。</span>
+      </div>
+      <div class="form-field" data-nav-field ${v.navSource === "yuanta" ? "" : "hidden"}>
+        <label class="form-field__label form-field__label--required">基金代號</label>
+        <input class="input" name="nav_code" value="${v.navCode}" placeholder="例：1250">
+        <span class="form-field__hint">元大基金代號（可在官網基金總覽網址 /myfund/information/ 後的數字）。</span>
+        <div style="display:flex; gap:var(--space-2); align-items:center; margin-top:var(--space-2); flex-wrap:wrap;">
+          <input class="input" data-nav-search placeholder="搜尋基金名稱／ISIN" style="flex:1 1 200px;">
+          <button type="button" class="btn btn--secondary btn--sm" data-nav-search-btn>搜尋</button>
+        </div>
+        <div data-nav-results style="margin-top:var(--space-2); max-height:220px; overflow:auto;"></div>
+      </div>
     </form>
   `;
+
+  // 基金淨值區塊：切換價格來源時顯示／隱藏代號欄位。
+  const navSourceSelect = m.body.querySelector('[name="nav_source"]');
+  const navField = m.body.querySelector('[data-nav-field]');
+  const navCodeInput = m.body.querySelector('[name="nav_code"]');
+  navSourceSelect.addEventListener("change", () => {
+    const isNav = navSourceSelect.value === "yuanta";
+    navField.hidden = !isNav;
+    navCodeInput.required = isNav;
+  });
+
+  // 基金搜尋：由伺服器轉向元大基金 API（api/_fund_nav.php），使用者不需
+  // 事先知道代號；點選結果即帶入代號與名稱。
+  const navSearchInput = m.body.querySelector("[data-nav-search]");
+  const navSearchBtn = m.body.querySelector("[data-nav-search-btn]");
+  const navResults = m.body.querySelector("[data-nav-results]");
+  async function runNavSearch() {
+    const q = navSearchInput.value.trim();
+    if (!q) return;
+    navSearchBtn.disabled = true;
+    navResults.innerHTML = `<div class="form-field__hint">搜尋中…</div>`;
+    try {
+      const result = await api.funds.catalogue(q);
+      const items = result?.items ?? [];
+      if (!items.length) {
+        navResults.innerHTML = `<div class="form-field__hint">找不到相符的基金。</div>`;
+        return;
+      }
+      navResults.innerHTML = items.map((f) => `
+        <button type="button" class="btn btn--ghost btn--sm" data-nav-pick="${escapeHtml(f.code)}"
+                style="display:block; width:100%; text-align:left; margin-bottom:4px;">
+          <strong>${escapeHtml(f.name)}</strong>
+          <span style="color:var(--color-text-muted);"> 代號 ${escapeHtml(f.code)}</span>
+          ${f.nav ? `<span style="color:var(--color-text-muted);"> 淨值 ${escapeHtml(f.nav)}（${escapeHtml(f.nav_date)}）</span>` : ""}
+        </button>`).join("");
+      navResults.querySelectorAll("[data-nav-pick]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const code = btn.dataset.navPick;
+          const picked = items.find((f) => f.code === code);
+          navCodeInput.value = code;
+          if (picked?.name) {
+            const nameInput = m.body.querySelector('[name="name"]');
+            if (!nameInput.value.trim() || isEdit) nameInput.value = picked.name;
+          }
+          navResults.innerHTML = "";
+          navSearchInput.value = "";
+        });
+      });
+    } catch (e) {
+      navResults.innerHTML = `<div class="form-field__hint">搜尋失敗：${escapeHtml(e?.message ?? "未知錯誤")}</div>`;
+    } finally {
+      navSearchBtn.disabled = false;
+    }
+  }
+  navSearchBtn.addEventListener("click", runNavSearch);
+  navSearchInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); runNavSearch(); }
+  });
   const cancel = document.createElement("button");
   cancel.className = "btn btn--secondary"; cancel.textContent = t("action.cancel");
   cancel.addEventListener("click", () => m.close());
@@ -889,6 +968,9 @@ function openSecurityModal(row, securities, refresh) {
       currency: String(fd.get("currency") || "TWD").toUpperCase(),
       name: String(fd.get("name") || "").trim(),
       type: String(fd.get("type") || "STOCK").toUpperCase(),
+      // 價格來源：空白 = 交易所報價；'yuanta' = 基金淨值。
+      nav_source: String(fd.get("nav_source") || "").trim(),
+      nav_code: String(fd.get("nav_code") || "").trim(),
     };
     save.disabled = true;
     try {
