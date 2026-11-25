@@ -432,13 +432,45 @@ function ensure_pnl_snapshots(PDO $pdo, int $userId): array
     // Batching is what keeps this fast: we do NOT call per-day;
     // api/_pnl_history.php builds one HTTP request per (symbol, month)
     // for TWSE or one request per (symbol, range) for Yahoo.
+    // 2.5.0: NAV-priced securities are excluded from the market history
+    // backfill. Their history comes from the issuer's own NAV series (see
+    // api/_fund_nav.php), and pushing them through TWSE/FinMind would both
+    // fail (no exchange ticker) and write a bogus 'historical_import' row
+    // over the official NAV print.
     $openPositions = $pdo->prepare(
-        'SELECT p.security_id, p.qty, s.symbol, s.exchange, s.currency '
+        'SELECT p.security_id, p.qty, s.symbol, s.exchange, s.currency, s.nav_source, s.nav_code '
         . 'FROM positions p JOIN securities s ON s.id=p.security_id AND s.user_id=p.user_id '
         . 'WHERE p.qty > 0 AND p.user_id=?'
     );
     $openPositions->execute([$userId]);
     $openSecs = $openPositions->fetchAll();
+    $marketSecs = [];
+    $navSecs = [];
+    foreach ($openSecs as $sec) {
+        if (trim((string)($sec['nav_source'] ?? '')) !== '') {
+            $navSecs[] = $sec;
+        } else {
+            $marketSecs[] = $sec;
+        }
+    }
+    // Backfill NAV history from the issuer series, then the market series
+    // from the exchange providers. NAV rows carry source='fund_nav' so they
+    // are never overwritten by the 'historical_import' rows below.
+    if ($navSecs) {
+        // Log the outcome. A silent failure here (e.g. every NAV row
+        // rejected for a missing security id) leaves the fund without
+        // closes, which freezes the daily P&L curve with no symptom
+        // other than a chart that stops advancing.
+        $navResult = pnl_backfill_fund_nav_history($pdo, $userId, $navSecs);
+        sh_log('info', 'pnl.nav_backfill', [
+            'user_id' => $userId,
+            'securities' => count($navSecs),
+            'imported' => (int)($navResult['imported'] ?? 0),
+            'failed_count' => count($navResult['failed'] ?? []),
+            'failed' => array_slice($navResult['failed'] ?? [], 0, 5),
+        ]);
+    }
+    $openSecs = $marketSecs;
     $missingDates = [];
     foreach ($days as $iso) {
         if ($iso >= $todayIso) continue; // historical backfill skips today
@@ -577,9 +609,13 @@ function pnl_read_history(PDO $pdo, int $userId, string $fromIso, string $toIso,
         // 'live' if any close was live; otherwise 'historical_import';
         // otherwise the day is just missing (we still surface it so the
         // chart shows a gap, but with source='missing').
+        // 2.5.0: a fund NAV print ('fund_nav') is the issuer's official
+        // value for that date, exactly like a live quote — it is not a
+        // reconstructed bar. Treating it as 'historical_import' would
+        // hollow out the marker on every fund-only day.
         . '(SELECT CASE WHEN EXISTS(SELECT 1 FROM prices pr WHERE pr.user_id=? AND pr.security_id IN '
         . '  (SELECT security_id FROM positions WHERE user_id=? AND qty>0) '
-        . ' AND pr.date=pnl_snapshots.snapshot_date AND pr.source=\'live\') '
+        . ' AND pr.date=pnl_snapshots.snapshot_date AND pr.source IN (\'live\',\'fund_nav\')) '
         . ' THEN \'live\' ELSE \'historical_import\' END) AS day_source '
         . 'FROM pnl_snapshots '
         . 'WHERE user_id=? AND granularity=? AND snapshot_date BETWEEN ? AND ? '

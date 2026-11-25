@@ -4,6 +4,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/bootstrap.php';
 require_once __DIR__ . '/_pnl.php';
 require_once __DIR__ . '/_pnl_history.php';
+require_once __DIR__ . '/_fund_nav.php';
 
 security_headers();
 
@@ -510,7 +511,7 @@ function save_app_setting(PDO $pdo, string $key, string $value): void
 
 function persist_prices(PDO $pdo, array $items): array
 {
-    $upsert = $pdo->prepare('INSERT INTO prices (id,security_id,date,open,high,low,close,volume,currency,created_at,user_id,source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(security_id,date) DO UPDATE SET user_id=excluded.user_id,open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,volume=excluded.volume,currency=excluded.currency,created_at=excluded.created_at,source=CASE WHEN prices.source=\'live\' THEN prices.source ELSE excluded.source END');
+    $upsert = $pdo->prepare('INSERT INTO prices (id,security_id,date,open,high,low,close,volume,currency,created_at,user_id,source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(security_id,date) DO UPDATE SET user_id=excluded.user_id,open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,volume=excluded.volume,currency=excluded.currency,created_at=excluded.created_at,source=CASE WHEN prices.source IN (\'live\',\'fund_nav\') THEN prices.source ELSE excluded.source END');
     $updated = 0; $failed = [];
     foreach ($items as $item) {
         if (!is_array($item) || empty($item['security_id']) || empty($item['date']) || !isset($item['close'])) {
@@ -524,10 +525,22 @@ function persist_prices(PDO $pdo, array $items): array
         // 2.3.1: live provider writes default to source='live' (the table
         // also defaults to 'live' for back-compat). Historical backfill
         // rows come through api/_pnl_history.php and force 'historical_import'.
-        $source = in_array(($item['source'] ?? 'live'), ['live','historical_import'], true)
+        // 2.5.0: fund NAV prints come through api/_fund_nav.php and use
+        // 'fund_nav' so a published NAV is distinguishable from a market
+        // quote and from a reconstructed historical bar.
+        $source = in_array(($item['source'] ?? 'live'), ['live','historical_import','fund_nav'], true)
             ? (string)$item['source']
             : 'live';
-        $upsert->execute([uuid(), $item['security_id'], $item['date'], $open, $high, $low, $close, decimal($item['volume'] ?? '0'), strtoupper((string)($item['currency'] ?? 'TWD')), now_sql(), (int)($item['user_id'] ?? 0), $source]);
+        // 2.5.0: a NAV print is the issuer's official value for that
+        // date, so it outranks a reconstructed 'historical_import' bar for
+        // the same day. 'live' still wins over everything (a real-time
+        // quote for the same security/date).
+        $upsert->execute([
+            uuid(), $item['security_id'], $item['date'], $open, $high, $low, $close,
+            decimal($item['volume'] ?? '0'),
+            strtoupper((string)($item['currency'] ?? 'TWD')),
+            now_sql(), (int)($item['user_id'] ?? 0), $source,
+        ]);
         $updated++;
     }
     return ['updated' => $updated, 'failed' => $failed];
@@ -671,18 +684,15 @@ function fetch_twse_mis_quotes(PDO $pdo, array $securities): array
         }
     }
     $result = persist_prices($pdo, $items);
-    $keepDatesBySecurity = [];
-    foreach ($items as $item) {
-        $key = (string)$item['user_id'] . "\0" . (string)$item['security_id'];
-        $keepDatesBySecurity[$key][] = (string)$item['date'];
-    }
-    foreach ($keepDatesBySecurity as $key => $dates) {
-        [$itemUserId, $securityId] = explode("\0", $key, 2);
-        $keepDates = array_values(array_unique($dates));
-        $datePlaceholders = implode(',', array_fill(0, count($keepDates), '?'));
-        $delete = $pdo->prepare("DELETE FROM prices WHERE user_id=? AND security_id=? AND date NOT IN ({$datePlaceholders})");
-        $delete->execute(array_merge([(int)$itemUserId, $securityId], $keepDates));
-    }
+    // NOTE: no prune here. In this schema `prices` is a date-keyed HISTORY
+    // table, not a single-bar snapshot file: pnl_load_day_closes() and the
+    // reports daily-diff chart join it on an EXACT past date, so deleting
+    // every row except the one just fetched erases the history the P&L
+    // curve is built from (the P&L backfill had to re-import it right
+    // after every refresh). A refresh only UPSERTs on (security_id,date)
+    // and every reader takes the newest bar with MAX(date), so a stale row
+    // can never win. The prune was inherited from the file-based design
+    // where one JSON series was rewritten in place.
     return array_merge($result, ['failed' => $failed]);
 }
 
@@ -831,23 +841,15 @@ function fetch_yahoo_quotes(PDO $pdo, array $securities): array
 
     $result = persist_prices($pdo, $items);
 
-    // Mirror TWSE: prune stale prices per security so the dashboard /
-    // holdings always see only the freshest snapshot. Without this the
-    // `prices` table accumulates rows from past refresh attempts and
-    // any chart that joins on `MAX(date)` keeps jumping back in time
-    // when a single fetch misses.
-    $keepDatesBySecurity = [];
-    foreach ($items as $item) {
-        $key = (string)$item['user_id'] . "\0" . (string)$item['security_id'];
-        $keepDatesBySecurity[$key][] = (string)$item['date'];
-    }
-    foreach ($keepDatesBySecurity as $key => $dates) {
-        [$itemUserId, $securityId] = explode("\0", $key, 2);
-        $keepDates = array_values(array_unique($dates));
-        $datePlaceholders = implode(',', array_fill(0, count($keepDates), '?'));
-        $delete = $pdo->prepare("DELETE FROM prices WHERE user_id=? AND security_id=? AND date NOT IN ({$datePlaceholders})");
-        $delete->execute(array_merge([(int)$itemUserId, $securityId], $keepDates));
-    }
+    // NOTE: no prune here. In this schema `prices` is a date-keyed HISTORY
+    // table, not a single-bar snapshot file: pnl_load_day_closes() and the
+    // reports daily-diff chart join it on an EXACT past date, so deleting
+    // every row except the one just fetched erases the history the P&L
+    // curve is built from (the P&L backfill had to re-import it right
+    // after every refresh). A refresh only UPSERTs on (security_id,date)
+    // and every reader takes the newest bar with MAX(date), so a stale row
+    // can never win. The prune was inherited from the file-based design
+    // where one JSON series was rewritten in place.
 
     return array_merge($result, ['failed' => $failed]);
 }
@@ -911,12 +913,18 @@ function fetch_finmind_quotes(PDO $pdo, int $userId, array $securities): array
 
     $items = [];
     $failed = [];
-    // For a "live" refresh we only need today's row; FinMind also returns
-    // any later rows it knows about (their daily data lands shortly
-    // after market close), so we pick the most recent row in the
-    // response. The persist_prices() UPSERT keys on (security_id,date)
-    // so a stray extra row can't disturb the live column.
-    $today = gmdate('Y-m-d');
+    // FinMind publishes a session bar only AFTER that session closed
+    // (later still on holidays). Querying exactly "today" therefore
+    // returned an empty payload for every symbol for the whole morning,
+    // so every refresh reported "FinMind no_data" for the entire book
+    // and the UI showed "市價更新失敗". Ask for a window that ends on
+    // today's Asia/Taipei market day and keep the bar with the GREATEST
+    // date: the newest published bar is the latest official close,
+    // whether or not it belongs to today's session.
+    $marketTz = new DateTimeZone('Asia/Taipei');
+    $marketToday = (new DateTimeImmutable('now', $marketTz))->format('Y-m-d');
+    $marketTodayYmd = (new DateTimeImmutable('now', $marketTz))->format('Ymd');
+    $windowStart = (new DateTimeImmutable('now', $marketTz))->modify('-30 days')->format('Y-m-d');
     foreach ($securities as $security) {
         $symbol = (string)($security['symbol'] ?? '');
         if ($symbol === '') {
@@ -926,8 +934,8 @@ function fetch_finmind_quotes(PDO $pdo, int $userId, array $securities): array
         $url = 'https://api.finmindtrade.com/api/v4/data'
             . '?dataset=TaiwanStockPrice'
             . '&data_id=' . rawurlencode($symbol)
-            . '&start_date=' . $today
-            . '&end_date=' . $today
+            . '&start_date=' . $windowStart
+            . '&end_date=' . $marketToday
             . '&token=' . rawurlencode($apiKey);
         $ch = curl_init($url);
         curl_setopt_array($ch, [
@@ -959,7 +967,25 @@ function fetch_finmind_quotes(PDO $pdo, int $userId, array $securities): array
         // for this symbol). For a normal /prices/batch-update call this
         // is today; for a backfill that gets cached at midnight it may
         // be yesterday — fine.
-        $rowData = $payload['data'][count($payload['data']) - 1];
+        // Keep the bar with the GREATEST date. Never the last array
+        // element: the payload order is not a contract, and a later
+        // correction can sit anywhere in the series.
+        $rowData = null;
+        $rowDate = '';
+        foreach ($payload['data'] as $candidate) {
+            if (!is_array($candidate)) continue;
+            $candDate = preg_replace('/[^0-9]/', '', (string)($candidate['date'] ?? ''));
+            if ($candDate === '' || strlen($candDate) !== 8) continue;
+            if ($rowData === null || $candDate > $rowDate) {
+                $rowData = $candidate;
+                $rowDate = $candDate;
+            }
+        }
+        if ($rowData === null) {
+            $failed[] = ['symbol' => $symbol, 'reason' => 'FinMind no dated row'];
+            usleep(200000);
+            continue;
+        }
         $close = isset($rowData['close']) ? (float)$rowData['close'] : 0.0;
         if ($close <= 0) {
             $failed[] = ['symbol' => $symbol, 'reason' => 'FinMind no valid close'];
@@ -988,35 +1014,27 @@ function fetch_finmind_quotes(PDO $pdo, int $userId, array $securities): array
             'currency' => (string)($security['currency'] ?? 'TWD'),
             'user_id' => (int)$userId,
             // 2.4.0 hotfix: be explicit so persist_prices' normalize
-            // logic can't ever see an undefined key. Previous version
-            // relied on `$item['source'] ?? 'live'` in persist_prices
-            // which 8/8 worked in Python but the PHP server was
-            // raising "CHECK constraint failed: source IN
-            // ('live','historical_import')" for the same bind. We
-            // suspect a PDO/SQLite type-coercion edge case in
-            // ATTR_EMULATE_PREPARES=false mode; setting it here is
-            // a one-line band-aid that keeps the live-only invariant
-            // at the source.
-            'source' => 'live',
+            // logic can't ever see an undefined key (the server raised
+            // "CHECK constraint failed: source IN ('live','historical_import')"
+            // when it was missing). Keep the label honest: a bar whose date
+            // is not today's Asia/Taipei session is a genuine published
+            // close for a PAST day, not a same-day quote, so it stays
+            // 'historical_import' and the reports chart keeps
+            // distinguishing "當日報價" from a reconstructed bar.
+            'source' => ($yyyymmdd === $marketTodayYmd) ? 'live' : 'historical_import',
         ];
         usleep(200000);
     }
     $result = persist_prices($pdo, $items);
-    // Mirror twse_mis / yahoo: prune stale prices per security so a
-    // single fetch that misses a day doesn't leave a hole in the
-    // chart that the user would interpret as "data not loaded".
-    $keepDatesBySecurity = [];
-    foreach ($items as $item) {
-        $key = (string)$item['user_id'] . "\0" . (string)$item['security_id'];
-        $keepDatesBySecurity[$key][] = (string)$item['date'];
-    }
-    foreach ($keepDatesBySecurity as $key => $dates) {
-        [$itemUserId, $securityId] = explode("\0", $key, 2);
-        $keepDates = array_values(array_unique($dates));
-        $datePlaceholders = implode(',', array_fill(0, count($keepDates), '?'));
-        $delete = $pdo->prepare("DELETE FROM prices WHERE user_id=? AND security_id=? AND date NOT IN ({$datePlaceholders})");
-        $delete->execute(array_merge([(int)$itemUserId, $securityId], $keepDates));
-    }
+    // NOTE: no prune here. In this schema `prices` is a date-keyed HISTORY
+    // table, not a single-bar snapshot file: pnl_load_day_closes() and the
+    // reports daily-diff chart join it on an EXACT past date, so deleting
+    // every row except the one just fetched erases the history the P&L
+    // curve is built from (the P&L backfill had to re-import it right
+    // after every refresh). A refresh only UPSERTs on (security_id,date)
+    // and every reader takes the newest bar with MAX(date), so a stale row
+    // can never win. The prune was inherited from the file-based design
+    // where one JSON series was rewritten in place.
     return array_merge($result, ['failed' => $failed]);
 }
 
@@ -1103,15 +1121,16 @@ if ($method === 'POST' && $path === '/accounts/delete') {
 }
 
 if ($method === 'GET' && $path === '/securities') {
-    $stmt = $pdo->prepare('SELECT id,symbol,exchange,currency,name,type,sector,is_active,created_at,updated_at FROM securities WHERE is_active=1 AND user_id=? ORDER BY symbol');
+    $stmt = $pdo->prepare('SELECT id,symbol,exchange,currency,name,type,sector,nav_source,nav_code,is_active,created_at,updated_at FROM securities WHERE is_active=1 AND user_id=? ORDER BY symbol');
     $stmt->execute([$userId]);
     envelope_ok(list_data(array_map('row_security', $stmt->fetchAll())));
 }
 if ($method === 'POST' && $path === '/securities/create') {
     require_fields($input, ['symbol', 'name', 'type']);
-    $row = [uuid(), strtoupper(trim((string)$input['symbol'])), strtoupper((string)($input['exchange'] ?? 'TW')), strtoupper((string)($input['currency'] ?? 'TWD')), trim((string)$input['name']), strtoupper((string)$input['type']), $input['sector'] ?? null, 1, now_sql(), now_sql(), $userId];
+    [$navSource, $navCode] = security_nav_input($input);
+    $row = [uuid(), strtoupper(trim((string)$input['symbol'])), strtoupper((string)($input['exchange'] ?? 'TW')), strtoupper((string)($input['currency'] ?? 'TWD')), trim((string)$input['name']), strtoupper((string)$input['type']), $input['sector'] ?? null, $navSource, $navCode, 1, now_sql(), now_sql(), $userId];
     try {
-        $stmt = $pdo->prepare('INSERT INTO securities (id,symbol,exchange,currency,name,type,sector,is_active,created_at,updated_at,user_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)');
+        $stmt = $pdo->prepare('INSERT INTO securities (id,symbol,exchange,currency,name,type,sector,nav_source,nav_code,is_active,created_at,updated_at,user_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)');
         $stmt->execute($row);
     } catch (PDOException $e) {
         if (str_contains($e->getMessage(), 'UNIQUE')) envelope_error('CONFLICT', 'Symbol already exists.', 409);
@@ -1123,12 +1142,22 @@ if ($method === 'POST' && $path === '/securities/create') {
 }
 if ($method === 'POST' && $path === '/securities/update') {
     require_fields($input, ['id', 'name', 'type']);
-    $stmt = $pdo->prepare('UPDATE securities SET exchange=?,currency=?,name=?,type=?,sector=?,updated_at=? WHERE id=? AND user_id=?');
-    $stmt->execute([strtoupper((string)($input['exchange'] ?? 'TW')), strtoupper((string)($input['currency'] ?? 'TWD')), trim((string)$input['name']), strtoupper((string)$input['type']), $input['sector'] ?? null, now_sql(), $input['id'], $userId]);
+    [$navSource, $navCode] = security_nav_input($input);
+    $stmt = $pdo->prepare('UPDATE securities SET exchange=?,currency=?,name=?,type=?,sector=?,nav_source=?,nav_code=?,updated_at=? WHERE id=? AND user_id=?');
+    $stmt->execute([strtoupper((string)($input['exchange'] ?? 'TW')), strtoupper((string)($input['currency'] ?? 'TWD')), trim((string)$input['name']), strtoupper((string)$input['type']), $input['sector'] ?? null, $navSource, $navCode, now_sql(), $input['id'], $userId]);
     if ($stmt->rowCount() === 0) envelope_error('NOT_FOUND', 'Security does not exist.', 404);
     $get = $pdo->prepare('SELECT * FROM securities WHERE id=? AND user_id=?');
     $get->execute([$input['id'], $userId]);
     envelope_ok(row_security($get->fetch()));
+}
+// Fund catalogue lookup — lets the Settings UI offer a searchable list of
+// 元大 funds (name / ISIN / fund id → latest NAV) instead of asking the
+// user to know the issuer-side code by heart.
+if ($method === 'GET' && $path === '/funds/catalogue') {
+    $keyword = trim((string)($_GET['q'] ?? ''));
+    if (mb_strlen($keyword) > 64) envelope_error('VALIDATION_ERROR', 'Search keyword is too long.', 422);
+    $funds = yuanta_fund_catalogue($keyword);
+    envelope_ok(['source' => 'yuanta', 'items' => array_slice($funds, 0, 50)]);
 }
 if ($method === 'POST' && $path === '/securities/disable') {
     require_fields($input, ['id']);
@@ -1703,12 +1732,15 @@ if ($method === 'POST' && $path === '/prices/batch-update') {
             envelope_error('QUOTE_PROVIDER_MANUAL', 'Quote provider is set to manual.', 422);
         }
         $symbols = $input['symbols'] ?? [];
-        $sql = 'SELECT id,symbol,exchange,currency,user_id FROM securities WHERE is_active=1 AND user_id=?';
+        $sql = 'SELECT id,symbol,exchange,currency,user_id,nav_source,nav_code FROM securities WHERE is_active=1 AND user_id=?';
         $params = [$userId];
         if (is_array($symbols) && count($symbols) > 0) {
             $placeholders = implode(',', array_fill(0, count($symbols), '?'));
             $sql .= " AND symbol IN ({$placeholders})";
-            $params = array_values($symbols);
+            // Keep the leading user scope parameter when adding the symbol
+            // filter. Dropping it makes the query bind the first symbol to
+            // user_id and silently selects zero securities.
+            $params = array_merge([$userId], array_values($symbols));
         }
         $stmt = $pdo->prepare($sql); $stmt->execute($params);
         $securities = $stmt->fetchAll();
@@ -1717,26 +1749,55 @@ if ($method === 'POST' && $path === '/prices/batch-update') {
             'securities_count' => count($securities),
             'symbols_filter' => is_array($symbols) ? count($symbols) : 0,
         ]);
+        // Split the holdings by pricing mechanism. A fund unit has no
+        // exchange ticker, so the market quote providers can never price
+        // it; it is priced by its issuer's published NAV instead. Sending
+        // a fund to MIS/FinMind would just produce a 'not found' failure
+        // row every refresh, so the two groups are fetched separately and
+        // the results are merged.
+        $navSecurities = [];
+        $marketSecurities = [];
+        foreach ($securities as $security) {
+            if (trim((string)($security['nav_source'] ?? '')) !== '') {
+                $navSecurities[] = $security;
+            } else {
+                $marketSecurities[] = $security;
+            }
+        }
+        $navResult = ['updated' => 0, 'failed' => []];
+        if ($navSecurities) {
+            $navResult = fetch_fund_nav_quotes($pdo, $navSecurities);
+            sh_log_quote_done('fund_nav', $navResult);
+        }
+        $marketResult = ['updated' => 0, 'failed' => []];
+        if (!$marketSecurities) {
+            // Nothing to price through the market providers (fund-only
+            // portfolio): the NAV refresh alone is the whole job.
+            envelope_ok(array_merge($navResult, ['nav_updated' => $navResult['updated']]));
+        }
         // Capture each fetcher's return so we can record the outcome
         // before envelope_ok() exits the script. fubon never returns
         // (its fetch_*_quotes() always envelope_error()s on the SDK
         // gap or missing key), so its fetch_error line lives inside
         // fetch_fubon_quotes() itself.
         if ($provider === 'fubon') {
-            envelope_ok(fetch_fubon_quotes($pdo, $userId, $securities));
+            $marketResult = fetch_fubon_quotes($pdo, $userId, $marketSecurities);
         } elseif ($provider === 'yahoo') {
-            $result = fetch_yahoo_quotes($pdo, $securities);
-            sh_log_quote_done($provider, $result);
-            envelope_ok($result);
+            $marketResult = fetch_yahoo_quotes($pdo, $marketSecurities);
         } elseif ($provider === 'finmind') {
-            $result = fetch_finmind_quotes($pdo, $userId, $securities);
-            sh_log_quote_done($provider, $result);
-            envelope_ok($result);
+            $marketResult = fetch_finmind_quotes($pdo, $userId, $marketSecurities);
         } else {
-            $result = fetch_twse_mis_quotes($pdo, $securities);
-            sh_log_quote_done($provider, $result);
-            envelope_ok($result);
+            $marketResult = fetch_twse_mis_quotes($pdo, $marketSecurities);
         }
+        sh_log_quote_done($provider, $marketResult);
+        envelope_ok(array_merge(
+            $marketResult,
+            [
+                'updated' => (int)$marketResult['updated'] + (int)$navResult['updated'],
+                'failed' => array_merge($navResult['failed'] ?? [], $marketResult['failed'] ?? []),
+                'nav_updated' => (int)$navResult['updated'],
+            ],
+        ));
     }
     foreach ($items as $item) {
         if (!is_array($item) || empty($item['security_id'])) {

@@ -141,11 +141,14 @@ function pnl_persist_history(PDO $pdo, int $userId, array $items): int
         . 'open=excluded.open, high=excluded.high, low=excluded.low, '
         . 'close=excluded.close, volume=excluded.volume, currency=excluded.currency, '
         . 'created_at=excluded.created_at, user_id=excluded.user_id, '
-        . 'source=CASE WHEN prices.source=\'live\' THEN prices.source ELSE excluded.source END'
+        // NB: the ON CONFLICT keeps 'live' if a live row already exists.
+        // That way a same-day refresh-after-backfill upgrades a historical
+        // row to live instead of overwriting fresh data with stale.
+        // 2.5.0: 'fund_nav' is kept too — an issuer-published NAV is the
+        // official value for that date and must not be downgraded to a
+        // reconstructed 'historical_import' bar.
+        . 'source=CASE WHEN prices.source IN (\'live\',\'fund_nav\') THEN prices.source ELSE excluded.source END'
     );
-    // NB: the ON CONFLICT keeps 'live' if a live row already exists.
-    // That way a same-day refresh-after-backfill upgrades a historical
-    // row to live instead of overwriting fresh data with stale.
     $count = 0;
     // 2.4.0 DEBUG: log entry shape and exit count so we can see if
     // items are reaching the foreach at all.

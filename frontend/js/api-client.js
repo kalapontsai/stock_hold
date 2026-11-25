@@ -284,6 +284,15 @@ export const securities = {
   remove: (id) => request("POST", "/securities/disable", { id }),
 };
 
+/* Funds (共同基金目錄)
+ *
+ * The server proxies the issuer's own JSON API, so the browser never
+ * talks to the fund house directly and no issuer endpoint leaks here.
+ */
+export const funds = {
+  catalogue: (q) => request("GET", "/funds/catalogue", null, { query: { q } }),
+};
+
 /* Transactions
  *
  * `list` returns `{ items, pagination }` where `pagination` is
